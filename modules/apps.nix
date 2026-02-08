@@ -37,7 +37,7 @@
     fzf # command-line fuzzy finder
     bat # cat clone with syntax highlighting
     fd # find alternative
-    nixfmt-classic # formatter for Nix files
+    nixfmt # formatter for Nix files
     gemini-cli # Gemini CLI
     # docker
     # docker-compose
