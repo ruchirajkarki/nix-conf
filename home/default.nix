@@ -5,6 +5,7 @@
     ./core.nix
     ./node.nix
     ./git.nix
+    ./gh.nix
     ./starship.nix
     ./fzf-bat.nix
   ];
