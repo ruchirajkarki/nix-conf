@@ -45,8 +45,89 @@ Your current nix-darwin configuration's structure should be as follows:
 │   ├── host-users.nix  # defines your hostname & all your system users
 │   ├── nix-core.nix    # nix's core configuration, you can ignore it for now
 │   └── system.nix      # defines your macOS's system configuration(like dock, trackpad, keyboard, finder, loginwindow, etc.)
+├── home           # Home Manager configuration for user-level settings
+│   ├── default.nix    # Home Manager entry point
+│   ├── shell.nix      # shell configuration
+│   ├── git.nix        # git configuration with gitalias
+│   ├── gh.nix         # GitHub CLI configuration with awesome-gh-aliases
+│   └── ...other modules...
 └── README.md
 ```
+
+## Git Aliases (Gitalias)
+
+This configuration includes [gitalias](https://github.com/ruchirajkarki/gitalias) - a collection of mnemonic git aliases derived from command names. The aliases follow a pattern where short sequences represent full git commands.
+
+### Common Git Alias Examples
+
+| Alias | Command | Description |
+|-------|---------|-------------|
+| `git a` | `add` | Stage files |
+| `git aa` | `add --all` | Stage all changes |
+| `git cm` | `commit --message` | Commit with message |
+| `git p` | `push` | Push commits |
+| `git l` | `pull` | Pull changes |
+| `git sm` | `switch main` | Switch to main branch |
+| `git sc` | `switch --create` | Create and switch to new branch |
+| `git st` | `status` | Check status |
+| `git dc` | `diff --cached` | View staged changes |
+| `git th` | `reset --hard` | Hard reset |
+| `git br` | `branch --remotes` | List remote branches |
+| `git lg` | `log` | View commit log |
+| `git go` | `log --oneline` | View commits in compact format |
+
+### Git Alias Categories
+
+- **add**: `a`, `aa`, `ai`, `ap`, `au`
+- **branch**: `b`, `ba`, `bav`, `bc`, `bd`, `bm`, `br`, `bv`
+- **commit**: `c`, `ca`, `cam`, `cm`
+- **diff**: `d`, `dc`, `dfi`, `dno`, `dns`, `ds`
+- **push**: `p`, `pa`, `pd`, `pf`, `po`, `pt`
+- **pull**: `l`, `la`, `ld`, `lr`, `lv`
+- **switch/branch**: `s`, `sc`, `sdc`, `sf`, `sm`
+- **reset**: `t`, `th`, `tm`, `ts`
+- **stash**: `h`, `ha`, `hc`, `hd`, `hl`, `hp`, `hs`
+- **log**: `g`, `ga`, `gf`, `go`, `gp`, `gs`
+
+For the complete list of all 170+ aliases, check [home/git.nix](home/git.nix).
+
+## GitHub CLI Aliases (awesome-gh-aliases)
+
+This configuration includes [awesome-gh-aliases](https://github.com/yashbhutwala/awesome-gh-aliases) - useful aliases and API scripts for the GitHub CLI (`gh`).
+
+### Common GitHub CLI Alias Examples
+
+| Alias | Command | Description |
+|-------|---------|-------------|
+| `gh pv` | `pr view` | View current PR |
+| `gh bugs` | `issue list --label="bugs"` | List issues labeled as bugs |
+| `gh user` | `api user` | Fetch authenticated user info as JSON |
+
+### Advanced GitHub CLI Aliases
+
+These aliases use GraphQL queries with pagination:
+
+- **`gh list-milestones`**: List open milestones for the current repository
+  ```bash
+  gh list-milestones
+  ```
+
+- **`gh pr-files-changed <PR_NUM>`**: List files changed in a pull request
+  ```bash
+  gh pr-files-changed 42
+  ```
+
+- **`gh list-repos <USERNAME>`**: List repositories for a specific user
+  ```bash
+  gh list-repos octocat
+  ```
+
+- **`gh search-repos <COUNT> <QUERY>`**: Search repositories with star counts
+  ```bash
+  gh search-repos 10 "language:go stars:>1000"
+  ```
+
+For more details, check [home/gh.nix](home/gh.nix).
 
 
 ## Notes on Network Proxy
