@@ -88,6 +88,9 @@
         ec = "rebase --continue";
         ei = "rebase --interactive";
         em = "rebase main";
+        ed = "rebase dev";
+        et = "rebase testing";
+        ep = "rebase production";
         eo = "rebase --onto";
         es = "rebase --skip";
 
@@ -149,6 +152,9 @@
         ma = "merge --abort";
         mc = "merge --continue";
         mm = "merge main";
+        md = "merge dev";
+        mt = "merge testing";
+        mp = "merge production";
         mnc = "merge --no-commit";
         mncs = "merge --no-commit --squash";
         ms = "merge --squash";
@@ -198,6 +204,9 @@
         sf = "switch --force";
         sfc = "switch --force-create";
         sm = "switch main";
+        sd = "switch dev";
+        st = "switch testing";
+        sp = "switch production";
 
         # reset
         t = "reset";
