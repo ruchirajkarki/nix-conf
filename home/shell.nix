@@ -131,6 +131,22 @@
         zle -N zle-keymap-select
         zle -N zle-line-init
         bindkey -M viins 'jk' vi-cmd-mode
+
+        # Create PR with @codex review comment
+        pr-create-codex() {
+          local output title="''${1:-}" base="''${2:-}"
+          local cmd="gh pr create --fill-verbose"
+          [[ -n "$title" ]] && cmd="$cmd --title \"$title\""
+          cmd="$cmd --editor"
+          [[ -n "$base" ]] && cmd="$cmd --base \"$base\""
+          output=$(eval "$cmd")
+          echo "$output"
+          # Extract PR number from output (format: https://github.com/owner/repo/pull/123)
+          local pr_num=$(echo "$output" | sed -n 's/.*pull\/\([0-9]\+\).*/\1/p')
+          if [[ -n "$pr_num" ]]; then
+            gh pr comment "$pr_num" -b '@codex review'
+          fi
+        }
       ''
     ];
   };
