@@ -134,10 +134,18 @@
 
         # Create PR with @codex review comment
         pr-create-codex() {
-          local output title="''${1:-}" base="''${2:-}"
-          local cmd="gh pr create --fill-verbose"
-          [[ -n "$title" ]] && cmd="$cmd --title \"$title\""
-          cmd="$cmd --editor"
+          local output title="''${1:-}" base="''${2:-}" body="''${3:-}"
+          local cmd="gh pr create"
+          # Only use --editor in TTY mode; skip it in non-TTY mode (--fill-verbose will auto-fill)
+          if [[ -t 0 ]]; then
+            cmd="$cmd --fill-verbose"
+            [[ -n "$title" ]] && cmd="$cmd --title \"$title\""
+            cmd="$cmd --editor"
+          else
+            cmd="$cmd --fill-verbose"
+            [[ -n "$title" ]] && cmd="$cmd --title \"$title\""
+            [[ -n "$body" ]] && cmd="$cmd --body \"$body\""
+          fi
           [[ -n "$base" ]] && cmd="$cmd --base \"$base\""
           output=$(eval "$cmd")
           echo "$output"
