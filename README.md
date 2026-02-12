@@ -334,3 +334,4 @@ Please refer to the `rich-demo` folder for more details:
 - [rich-demo - homebrew's mirror settings](/rich-demo/modules/homebrew-mirror.nix)
 
 
+test
