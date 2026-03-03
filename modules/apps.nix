@@ -75,6 +75,7 @@
       # TODO Feel free to add your favorite apps here.
       # "DevCleaner for Xcode" = 1388020431; # Xcode cache cleaner
       "uBlock origin lite" = 6745342698; # content blocker
+      "raindrop.io" = 1549370672; # bookmark manager
 
       # Xcode = 497799835;
       # Wechat = 836500024;
@@ -123,7 +124,8 @@
       "dopplerhq/cli/doppler" # command-line interface for the Doppler platform
       ########################
       "git-extras"
-      "hashicorp/tap/vault" # HashiCorp Vault CLI
+      # "hashicorp/tap/vault" # HashiCorp Vault CLI
+      "btop" # resource monitor that shows usage and stats for processor, memory, disks, network and processes
     ];
 
     # `brew install --cask`
