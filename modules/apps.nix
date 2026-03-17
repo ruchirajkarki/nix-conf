@@ -76,6 +76,7 @@
       # "DevCleaner for Xcode" = 1388020431; # Xcode cache cleaner
       "uBlock origin lite" = 6745342698; # content blocker
       "raindrop.io" = 1549370672; # bookmark manager
+      "perplexity" = 6714467650; # AI-powered search engine
 
       # Xcode = 497799835;
       # Wechat = 836500024;
@@ -140,7 +141,7 @@
       "localsend" # sharing files between devices on a local network
       "google-chrome" # web browser
       "ghostty" # fast, feature-rich, and cross-platform terminal emulator
-      "appcleaner" # utility to thoroughly uninstall applications on macOS
+      #"appcleaner" # utility to thoroughly uninstall applications on macOS
       "pearcleaner" # likely a cleaning utility for macOS
       # "cloudflare-warp"
       # "cursor"
@@ -150,7 +151,7 @@
       # "ollama-app"
       # "expo-orbit"
       "obsidian" # markdown-based knowledge base and note-taking application
-      "cursor" # AI-first code editor
+      # "cursor" # AI-first code editor
       "codex" # OpenAI Codex CLI
       # "rar"
       # "visual-studio-code"
@@ -161,14 +162,14 @@
       # IM & audio & remote desktop & meeting
       # "telegram"
       # "discord"
-      "brainfm" # service that provides functional music to improve focus, relaxation, and sleep
+      # "brainfm" # service that provides functional music to improve focus, relaxation, and sleep
 
       # "anki"
-      "iina" # modern media player for macOS
+      # "iina" # modern media player for macOS
       "raycast" # (HotKey: alt/option + space)search, caculate and run scripts(with many plugins)
       "stats" # free, open-source macOS app that monitors various system statistics
       # "eudic" # 欧路词典
-      "tower"
+      # "tower"
 
       # Development
       # "insomnia" # REST client
