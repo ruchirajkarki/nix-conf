@@ -39,9 +39,9 @@
     tmux
 
     # Next.js dev helpers
-    watchman # file watching service developed by Facebook
+    # watchman # file watching service developed by Facebook
     # eslint_d # daemon version of ESLint for faster linting
-    mkcert # simple tool for creating locally trusted development certificates
+    # mkcert # simple tool for creating locally trusted development certificates
   ];
 
   programs = {
@@ -81,6 +81,7 @@
     yazi = {
       enable = true;
       enableZshIntegration = true;
+      shellWrapperName = "yy";
       settings = {
         manager = {
           show_hidden = true;

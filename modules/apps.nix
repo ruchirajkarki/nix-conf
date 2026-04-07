@@ -75,7 +75,7 @@
       # TODO Feel free to add your favorite apps here.
       # "DevCleaner for Xcode" = 1388020431; # Xcode cache cleaner
       "uBlock origin lite" = 6745342698; # content blocker
-      "raindrop.io" = 1549370672; # bookmark manager
+      # "raindrop.io" = 1549370672; # bookmark manager; use Homebrew cask below because `mas` fails on this host
       # "perplexity" = 6714467650; # fails via `mas` on this host; install manually if needed
 
       # Xcode = 497799835;
@@ -153,6 +153,7 @@
       # "ollama-app"
       # "expo-orbit"
       "obsidian" # markdown-based knowledge base and note-taking application
+      "raindropio" # bookmark manager; use cask instead of App Store install
       # "cursor" # AI-first code editor
       "codex" # OpenAI Codex CLI
       # "rar"
