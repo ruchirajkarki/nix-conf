@@ -18,31 +18,31 @@
   #
   # Related Discussion: https://discourse.nixos.org/t/darwin-again/29331
   environment.systemPackages = with pkgs; [
-    neovim # modern, highly extensible text editor
+    # neovim # modern, highly extensible text editor
     git # version control system
-    lazygit # terminal-based UI for Git
+    # lazygit # terminal-based UI for Git
     # just # use Justfile to simplify nix-darwin's commands
     # rar
     gh # GitHub CLI
-    nodejs # JavaScript runtime
-    nil # Language Server for Nix
+    # nodejs # JavaScript runtime
+    # nil # Language Server for Nix
     # yarn
     #nodejs_18
     #(yarn.override { nodejs = nodejs_18; })
     direnv # loads environment variables per directory
     # nix-direnv
     jq # command-line JSON processor
-    ripgrep # fast search tool
-    just # command runner
+    # ripgrep # fast search tool
+    # just # command runner
     fzf # command-line fuzzy finder
     bat # cat clone with syntax highlighting
     fd # find alternative
-    nixfmt # formatter for Nix files
-    gemini-cli # Gemini CLI
+    # nixfmt # formatter for Nix files
+    # gemini-cli # Gemini CLI
     # docker
     # docker-compose
     # For Expo
-    nodePackages.eas-cli # command-line tool for Expo Application Services
+    eas-cli # command-line tool for Expo Application Services
 
     pkgs-turbo.turbo # Vercel TurboRepo CLI (pinned to working version)
     # tmux # terminal multiplexer for managing terminal sessions
@@ -76,7 +76,7 @@
       # "DevCleaner for Xcode" = 1388020431; # Xcode cache cleaner
       "uBlock origin lite" = 6745342698; # content blocker
       "raindrop.io" = 1549370672; # bookmark manager
-      "perplexity" = 6714467650; # AI-powered search engine
+      # "perplexity" = 6714467650; # fails via `mas` on this host; install manually if needed
 
       # Xcode = 497799835;
       # Wechat = 836500024;
@@ -88,7 +88,8 @@
     };
 
     taps = [
-      "hashicorp/tap"
+      # "viarotel-org/escrcpy"
+      # "hashicorp/tap"
       # "homebrew/services"
     ];
 
@@ -109,8 +110,8 @@
       # "minikube"
       # "skaffold"
       # "rbenv"
-      "libpq" # C application programmer's interface to PostgreSQL
-      "shellcheck" # shell script static analysis tool
+      # "libpq" # C application programmer's interface to PostgreSQL
+      # "shellcheck" # shell script static analysis tool
       "openjdk@21" # Java Development Kit
       "spicetify-cli" # command-line tool to customize Spotify
       # "container"
@@ -134,20 +135,21 @@
     casks = [
       "openmtp" # Android file transfer app for macOS
 
-      # "xcodes"
+      "xcodes-app" # renamed from xcodes
       "firefox" # web browser
       "spotify" # music streaming service
       # "claude-code"
       "localsend" # sharing files between devices on a local network
-      "google-chrome" # web browser
+      "viarotel-org/escrcpy/escrcpy" # tap-qualified cask token for Escrcpy
+      # "google-chrome" # web browser
       "ghostty" # fast, feature-rich, and cross-platform terminal emulator
       #"appcleaner" # utility to thoroughly uninstall applications on macOS
       "pearcleaner" # likely a cleaning utility for macOS
       # "cloudflare-warp"
       # "cursor"
       "mac-mouse-fix" # likely a utility for customizing or fixing mouse behavior on macOS
-      # "android-studio"
-      # "reactotron"
+      "android-studio"
+      "reactotron"
       # "ollama-app"
       # "expo-orbit"
       "obsidian" # markdown-based knowledge base and note-taking application

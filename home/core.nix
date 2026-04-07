@@ -40,7 +40,7 @@
 
     # Next.js dev helpers
     watchman # file watching service developed by Facebook
-    nodePackages.eslint_d # daemon version of ESLint for faster linting
+    # eslint_d # daemon version of ESLint for faster linting
     mkcert # simple tool for creating locally trusted development certificates
   ];
 
