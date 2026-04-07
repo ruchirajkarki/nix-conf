@@ -74,7 +74,7 @@
     masApps = {
       # TODO Feel free to add your favorite apps here.
       # "DevCleaner for Xcode" = 1388020431; # Xcode cache cleaner
-      "uBlock origin lite" = 6745342698; # content blocker
+      # "uBlock origin lite" = 6745342698; # content blocker; `mas` install fails on this host, install manually from the App Store
       # "raindrop.io" = 1549370672; # bookmark manager; use Homebrew cask below because `mas` fails on this host
       # "perplexity" = 6714467650; # fails via `mas` on this host; install manually if needed
 
