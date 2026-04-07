@@ -21,6 +21,10 @@
         format = "on [$symbol$active(($region))]($style) ";
         symbol = "🅶 ️";
       };
+      docker_context = {
+        symbol = "🐳 ";
+        disabled = false;
+      };
     };
   };
 }

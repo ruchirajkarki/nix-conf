@@ -88,7 +88,7 @@
     };
 
     taps = [
-      # "viarotel-org/escrcpy"
+      "viarotel-org/escrcpy"
       # "hashicorp/tap"
       # "homebrew/services"
     ];
