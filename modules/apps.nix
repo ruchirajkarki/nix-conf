@@ -118,6 +118,11 @@
       # "spicetify-cli" # Spotify customizer
       # "scrcpy"
       # "cocoapods" # CocoaPods CLI for iOS development
+      "ffmpeg" # multimedia framework for handling video, audio, and other multimedia files and streams
+      "asciiquarium" # aquarium animation in ASCII art
+      "speedtest-cli" # command-line interface for testing internet bandwidth using speedtest.net
+      "neofetch" # command-line system information tool
+      "yt-dlp" # command-line tool for downloading videos from YouTube and other video platforms
 
       ##### FOR DOPPLER ######
       # Prerequisite. gnupg is required for binary signature verification
@@ -137,6 +142,7 @@
 
       "xcodes-app" # renamed from xcodes
       "firefox" # web browser
+      "jan" # offline AI chat tool
       "spotify" # music streaming service
       # "claude-code"
       "localsend" # sharing files between devices on a local network
@@ -168,7 +174,7 @@
       # "brainfm" # service that provides functional music to improve focus, relaxation, and sleep
 
       # "anki"
-      # "iina" # modern media player for macOS
+      "iina" # modern media player for macOS
       "raycast" # (HotKey: alt/option + space)search, caculate and run scripts(with many plugins)
       "stats" # free, open-source macOS app that monitors various system statistics
       # "eudic" # 欧路词典
