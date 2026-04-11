@@ -100,9 +100,9 @@
         export PATH="$PATH:$ANDROID_HOME/emulator"
 
         # Install NestJS CLI globally via pnpm if not already installed
-        if command -v pnpm >/dev/null 2>&1 && ! command -v nest >/dev/null 2>&1; then
-          pnpm add -g @nestjs/cli >/dev/null 2>&1 || true
-        fi
+        # if command -v pnpm >/dev/null 2>&1 && ! command -v nest >/dev/null 2>&1; then
+        #   pnpm add -g @nestjs/cli >/dev/null 2>&1 || true
+        # fi
 
         # fzf previews and nicer defaults
         export FZF_DEFAULT_OPTS="--height=40% --layout=reverse --border"

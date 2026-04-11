@@ -137,6 +137,7 @@
 
       "xcodes-app" # renamed from xcodes
       "firefox" # web browser
+      "jan" # offline AI chat tool
       "spotify" # music streaming service
       # "claude-code"
       "localsend" # sharing files between devices on a local network
