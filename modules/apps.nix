@@ -133,6 +133,7 @@
       "git-extras"
       # "hashicorp/tap/vault" # HashiCorp Vault CLI
       "btop" # resource monitor that shows usage and stats for processor, memory, disks, network and processes
+      # "copilot" # formula conflicts with copilot binary; use cask below
     ];
 
     # `brew install --cask`
@@ -144,6 +145,7 @@
       "firefox" # web browser
       "jan" # offline AI chat tool
       "spotify" # music streaming service
+      "copilot-cli" # GitHub Copilot CLI (cask token; installs `copilot` binary)
       # "claude-code"
       "localsend" # sharing files between devices on a local network
       "viarotel-org/escrcpy/escrcpy" # tap-qualified cask token for Escrcpy
@@ -156,7 +158,7 @@
       "mac-mouse-fix" # likely a utility for customizing or fixing mouse behavior on macOS
       "android-studio"
       "reactotron"
-      # "ollama-app"
+      "ollama-app"
       # "expo-orbit"
       "obsidian" # markdown-based knowledge base and note-taking application
       "raindropio" # bookmark manager; use cask instead of App Store install
