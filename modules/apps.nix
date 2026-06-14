@@ -165,7 +165,7 @@
       # "cursor" # AI-first code editor
       "codex" # OpenAI Codex CLI
       # "rar"
-      # "visual-studio-code"
+      "visual-studio-code"
       # "utm"
       # "arc"
       # "sublime-text"
@@ -188,7 +188,7 @@
       # "wireshark" # network analyzer
       # "soulseek"
       # "docker-desktop" # desktop application for running Docker
-      "visual-studio-code@insiders" # insiders build; signed build; nix package fails codesign on macOS
+      # "visual-studio-code@insiders" # insiders build; signed build; nix package fails codesign on macOS
     ];
   };
 }

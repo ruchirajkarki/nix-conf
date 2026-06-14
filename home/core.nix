@@ -66,6 +66,8 @@
       enable = true;
       defaultEditor = true;
       vimAlias = true;
+      withRuby = false;
+      withPython3 = false;
     };
 
     # A modern replacement for ‘ls’

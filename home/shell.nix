@@ -139,7 +139,7 @@
     t = "turbo";
     dd = "cd ~/nix-conf && make deploy";
 
-    code = "code-insiders";
+    # code = "code-insiders";
 
     # pnpm dev aliases
     pi = "pnpm install";
