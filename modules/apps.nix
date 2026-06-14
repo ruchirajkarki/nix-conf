@@ -42,9 +42,9 @@
     # docker
     # docker-compose
     # For Expo
-    eas-cli # command-line tool for Expo Application Services
+    # eas-cli # command-line tool for Expo Application Services
 
-    pkgs-turbo.turbo # Vercel TurboRepo CLI (pinned to working version)
+    # pkgs-turbo.turbo # Vercel TurboRepo CLI (pinned to working version)
     # tmux # terminal multiplexer for managing terminal sessions
     # postman
     # flutter
@@ -88,7 +88,7 @@
     };
 
     taps = [
-      "viarotel-org/escrcpy"
+      # "viarotel-org/escrcpy"
       # "hashicorp/tap"
       # "homebrew/services"
     ];
@@ -101,18 +101,18 @@
       "biome" # toolchain for web development
       # "aria2" # download tool
       # "httpie" # http client
-      "cloudflared" # command-line tool for Cloudflare Tunnel
+      # "cloudflared" # command-line tool for Cloudflare Tunnel
       # "mariadb"
       # "php"
       # "composer"
-      # "go"
+      "go"
       # "fastlane"
       # "minikube"
       # "skaffold"
       # "rbenv"
       # "libpq" # C application programmer's interface to PostgreSQL
       # "shellcheck" # shell script static analysis tool
-      "openjdk@21" # Java Development Kit
+      # "openjdk@21" # Java Development Kit
       "spicetify-cli" # command-line tool to customize Spotify
       # "container"
       # "spicetify-cli" # Spotify customizer
@@ -128,7 +128,7 @@
       # Prerequisite. gnupg is required for binary signature verification
       "gnupg" # tool for secure communication
       # Next, install using brew (use `doppler update` for subsequent updates)
-      "dopplerhq/cli/doppler" # command-line interface for the Doppler platform
+      # "dopplerhq/cli/doppler" # command-line interface for the Doppler platform
       ########################
       "git-extras"
       # "hashicorp/tap/vault" # HashiCorp Vault CLI
@@ -148,7 +148,7 @@
       "copilot-cli" # GitHub Copilot CLI (cask token; installs `copilot` binary)
       # "claude-code"
       "localsend" # sharing files between devices on a local network
-      "viarotel-org/escrcpy/escrcpy" # tap-qualified cask token for Escrcpy
+      # "viarotel-org/escrcpy/escrcpy" # tap-qualified cask token for Escrcpy
       # "google-chrome" # web browser
       "ghostty" # fast, feature-rich, and cross-platform terminal emulator
       #"appcleaner" # utility to thoroughly uninstall applications on macOS
@@ -156,8 +156,8 @@
       # "cloudflare-warp"
       # "cursor"
       "mac-mouse-fix" # likely a utility for customizing or fixing mouse behavior on macOS
-      "android-studio"
-      "reactotron"
+      # "android-studio"
+      # "reactotron"
       "ollama-app"
       # "expo-orbit"
       "obsidian" # markdown-based knowledge base and note-taking application
@@ -187,7 +187,7 @@
       # "postman"
       # "wireshark" # network analyzer
       # "soulseek"
-      "docker-desktop" # desktop application for running Docker
+      # "docker-desktop" # desktop application for running Docker
       "visual-studio-code@insiders" # insiders build; signed build; nix package fails codesign on macOS
     ];
   };
