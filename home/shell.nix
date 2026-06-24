@@ -99,6 +99,8 @@
         export PATH="$PATH:$ANDROID_HOME/tools/bin"
         export PATH="$PATH:$ANDROID_HOME/emulator"
 
+        export PATH=/Users/ruchirajkarki/.mimocode/bin:$PATH
+
         # Install NestJS CLI globally via pnpm if not already installed
         # if command -v pnpm >/dev/null 2>&1 && ! command -v nest >/dev/null 2>&1; then
         #   pnpm add -g @nestjs/cli >/dev/null 2>&1 || true
@@ -138,6 +140,7 @@
   home.shellAliases = {
     t = "turbo";
     dd = "cd ~/nix-conf && make deploy";
+    cto = "claude-token-optimizer";
 
     # code = "code-insiders";
 
