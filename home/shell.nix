@@ -140,7 +140,7 @@
   home.shellAliases = {
     t = "turbo";
     dd = "cd ~/nix-conf && make deploy";
-    cto = "claude-token-optimizer";
+    cto = "${config.home.homeDirectory}/.local/share/cto/bin/cto";
 
     # code = "code-insiders";
 
