@@ -160,6 +160,7 @@
     # `brew install --cask`
     # TODO Feel free to add your favorite apps here.
     casks = [
+      "opensuperwhisper" # macOS dictation app using Whisper/Parakeet
       "openmtp" # Android file transfer app for macOS
 
       "xcodes-app" # renamed from xcodes
