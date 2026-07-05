@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for Next.js (standalone output)
 
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml* package-lock.json* yarn.lock* ./
 RUN \
@@ -8,14 +8,14 @@ RUN \
   elif [ -f yarn.lock ]; then yarn --frozen-lockfile; \
   else npm ci; fi
 
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED 1
 RUN corepack enable && pnpm build || npm run build
 
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV production
 ENV NEXT_TELEMETRY_DISABLED 1
