@@ -52,17 +52,9 @@
 
     curl
     wget
-    jq
-    fd
     fastfetch
-    ripgrep
     killall
-    lazygit
     tree
-    bun
-    rustup
-    zip
-    unzip
     nerd-fonts.hack
     roboto
     noto-fonts
