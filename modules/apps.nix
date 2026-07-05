@@ -49,7 +49,6 @@
     # flutter
     # android-tools
     # codex # Outdated in nixpkgs (0.58.0), install via npm: npm install -g codex-cli
-    
 
     curl
     wget
