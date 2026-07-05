@@ -8,6 +8,7 @@
     ./gh.nix
     ./starship.nix
     ./fzf-bat.nix
+    ./wezterm.nix
   ];
 
   # Home Manager needs a bit of information about you and the

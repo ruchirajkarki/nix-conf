@@ -43,13 +43,33 @@
     # docker-compose
     # For Expo
     # eas-cli # command-line tool for Expo Application Services
-
     # pkgs-turbo.turbo # Vercel TurboRepo CLI (pinned to working version)
     # tmux # terminal multiplexer for managing terminal sessions
     # postman
     # flutter
     # android-tools
     # codex # Outdated in nixpkgs (0.58.0), install via npm: npm install -g codex-cli
+    
+
+    curl
+    wget
+    jq
+    fd
+    fastfetch
+    ripgrep
+    killall
+    lazygit
+    tree
+    bun
+    rustup
+    zip
+    unzip
+    nerd-fonts.hack
+    roboto
+    noto-fonts
+    noto-fonts-cjk-sans
+    noto-fonts-color-emoji
+    font-awesome
   ];
   environment.variables.EDITOR = "nvim";
 
@@ -106,6 +126,7 @@
       # "php"
       # "composer"
       "go"
+      "nvm"
       # "fastlane"
       # "minikube"
       # "skaffold"
@@ -153,6 +174,7 @@
       "ghostty" # fast, feature-rich, and cross-platform terminal emulator
       #"appcleaner" # utility to thoroughly uninstall applications on macOS
       "pearcleaner" # likely a cleaning utility for macOS
+      "wezterm" # GPU-accelerated terminal emulator
       # "cloudflare-warp"
       # "cursor"
       "mac-mouse-fix" # likely a utility for customizing or fixing mouse behavior on macOS
@@ -174,7 +196,7 @@
       # "telegram"
       # "discord"
       # "brainfm" # service that provides functional music to improve focus, relaxation, and sleep
-
+      "bruno"
       # "anki"
       "iina" # modern media player for macOS
       "raycast" # (HotKey: alt/option + space)search, caculate and run scripts(with many plugins)
@@ -187,7 +209,7 @@
       # "postman"
       # "wireshark" # network analyzer
       # "soulseek"
-      # "docker-desktop" # desktop application for running Docker
+      "docker-desktop" # desktop application for running Docker
       # "visual-studio-code@insiders" # insiders build; signed build; nix package fails codesign on macOS
     ];
   };
