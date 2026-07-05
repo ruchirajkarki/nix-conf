@@ -8,12 +8,13 @@
     defaultEditor = true;
     viAlias = true;
     vimAlias = true;
+    withRuby = false;
+    withPython3 = false;
 
     # Extra packages available in Neovim's PATH
     extraPackages = with pkgs; [
       ripgrep
       fd
-      tree-sitter
       gcc
       # JavaScript / TypeScript
       prettier
