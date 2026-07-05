@@ -40,12 +40,6 @@
       inputs.nixpkgs.follows = "nixpkgs-darwin";
     };
 
-    # Kickstart.nvim: use your personal fork
-    # kickstart-nvim = {
-    #   url = "github:ruchirajkarki/kickstart.nvim";
-    #   flake = false; # fetch as a plain source tree
-    # };
-
     nix-homebrew.url = "github:zhaofengli/nix-homebrew";
   };
 
