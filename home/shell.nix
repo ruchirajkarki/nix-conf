@@ -20,29 +20,13 @@
       fi
     '';
     autosuggestion = {
-      enable = true; # enables command autosuggestions
+      enable = true;
     };
     syntaxHighlighting = {
-      enable = true; # enables syntax highlighting for the shell
+      enable = true;
     };
-    "oh-my-zsh" = {
-      enable = false;
-      theme = "agnoster";
-      plugins = [
-        "git"
-        "npm"
-        "node"
-        "yarn"
-        "docker"
-        "docker-compose"
-        "kubectl"
-        "helm"
-      ];
-    };
-    # Prefer XDG layout for Zsh configs (silence deprecation warning)
     dotDir = "${config.xdg.configHome}/zsh";
 
-    # Improve history behavior
     history = {
       size = 10000;
       save = 10000;
@@ -51,29 +35,27 @@
       expireDuplicatesFirst = true;
     };
 
-    # Helpful, low-risk Zsh options
     setOptions = [
-      "AUTO_CD" # cd by typing directory name
-      "INTERACTIVE_COMMENTS" # allow # comments in interactive shell
-      "EXTENDED_GLOB" # richer globbing
-      "HIST_IGNORE_DUPS" # ignore consecutive duplicates
-      "HIST_VERIFY" # edit before executing from history
+      "AUTO_CD"
+      "INTERACTIVE_COMMENTS"
+      "EXTENDED_GLOB"
+      "HIST_IGNORE_DUPS"
+      "HIST_VERIFY"
     ];
 
-    # Lightweight plugins (non-OMZ)
     plugins = [
       {
-        name = "fzf-tab"; # integrates fzf with Zsh's tab completion
+        name = "fzf-tab";
         src = pkgs.zsh-fzf-tab;
         file = "share/fzf-tab/fzf-tab.plugin.zsh";
       }
       {
-        name = "zsh-vi-mode"; # enables vi-like keybindings in Zsh
+        name = "zsh-vi-mode";
         src = pkgs.zsh-vi-mode;
         file = "share/zsh-vi-mode/zsh-vi-mode.plugin.zsh";
       }
       {
-        name = "zsh-autopair"; # automatically inserts and deletes matching pairs of delimiters
+        name = "zsh-autopair";
         src = pkgs.zsh-autopair;
         file = "share/zsh-autopair/autopair.zsh";
       }
@@ -100,11 +82,6 @@
         export PATH="$PATH:$ANDROID_HOME/emulator"
 
         export PATH=/Users/ruchirajkarki/.mimocode/bin:$PATH
-
-        # Install NestJS CLI globally via pnpm if not already installed
-        # if command -v pnpm >/dev/null 2>&1 && ! command -v nest >/dev/null 2>&1; then
-        #   pnpm add -g @nestjs/cli >/dev/null 2>&1 || true
-        # fi
 
         # fzf previews and nicer defaults
         export FZF_DEFAULT_OPTS="--height=40% --layout=reverse --border"
@@ -142,8 +119,6 @@
     dd = "cd ~/nix-conf && make deploy";
     cto = "${config.home.homeDirectory}/.local/share/cto/bin/cto";
 
-    # code = "code-insiders";
-
     # pnpm dev aliases
     pi = "pnpm install";
     pd = "pnpm dev";
@@ -156,7 +131,7 @@
     urldecode = "python3 -c 'import sys, urllib.parse as ul; print(ul.unquote_plus(sys.stdin.read()))'";
     urlencode = "python3 -c 'import sys, urllib.parse as ul; print(ul.quote_plus(sys.stdin.read()))'";
 
-    # Additional development-friendly aliases
+    # Git aliases
     gs = "git stash";
     gc = "git checkout";
     gpl = "git pull";
@@ -180,14 +155,5 @@
     dcd = "docker-compose down";
     dcb = "docker-compose build";
     dcl = "docker-compose logs";
-
-    # Kubernetes aliases
-    k = "kubectl";
-    kga = "kubectl get all";
-    kgn = "kubectl get nodes";
-    kgp = "kubectl get pods";
-    kgs = "kubectl get services";
-    kd = "kubectl describe";
-    kl = "kubectl logs";
   };
 }
