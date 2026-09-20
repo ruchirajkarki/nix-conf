@@ -98,6 +98,52 @@
         zle -N zle-keymap-select
         zle -N zle-line-init
         bindkey -M viins 'jk' vi-cmd-mode
+
+        claude-tr() {
+          local env_file="$HOME/.config/tokenrouter.env"
+
+          if [ ! -r "$env_file" ]; then
+            echo "claude-tr: missing $env_file (needs TOKENROUTER_API_KEY=...)" >&2
+            return 1
+          fi
+
+          local key
+          key=$(grep -m1 '^TOKENROUTER_API_KEY=' "$env_file" | cut -d= -f2-)
+
+          if [ -z "$key" ]; then
+            echo "claude-tr: TOKENROUTER_API_KEY not set in $env_file" >&2
+            return 1
+          fi
+
+          ANTHROPIC_AUTH_TOKEN="$key" \
+          ANTHROPIC_BASE_URL="https://api.tokenrouter.com" \
+          ANTHROPIC_MODEL="''${TOKENROUTER_MODEL:-z-ai/glm-5.3-free}" \
+          ANTHROPIC_DEFAULT_SONNET_MODEL="''${TOKENROUTER_SONNET_MODEL:-z-ai/glm-5.3-free}" \
+          ANTHROPIC_DEFAULT_OPUS_MODEL="''${TOKENROUTER_OPUS_MODEL:-z-ai/glm-5.3-free}" \
+          ANTHROPIC_DEFAULT_HAIKU_MODEL="''${TOKENROUTER_HAIKU_MODEL:-z-ai/glm-5.3-free}" \
+          command claude "$@"
+        }
+
+        # Show TokenRouter models available to the current API key.
+        claude-tr-models() {
+          local key
+          key=$(grep -m1 '^TOKENROUTER_API_KEY=' \
+            "$HOME/.config/tokenrouter.env" 2>/dev/null | cut -d= -f2-)
+
+          if [ -z "$key" ]; then
+            echo "claude-tr-models: no TOKENROUTER_API_KEY in ~/.config/tokenrouter.env" >&2
+            return 1
+          fi
+
+          curl -s \
+            -H "Authorization: Bearer $key" \
+            https://api.tokenrouter.com/v1/models \
+            | python3 -c '
+        import json, sys
+        d = json.load(sys.stdin)
+        print("\n".join(sorted(m["id"] for m in d["data"])) if "data" in d else d)
+        '
+        }
       ''
     ];
   };
@@ -107,7 +153,7 @@
     cto = "${config.home.homeDirectory}/.local/share/cto/bin/cto";
 
     # pnpm dev aliases
-    pi = "pnpm install";
+    # pi = "pnpm install";
     pd = "pnpm dev";
     pb = "pnpm build";
     pl = "pnpm lint";

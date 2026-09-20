@@ -27,6 +27,7 @@ in {
     localBin
     pnpmHome
     "${dataHome}/cto/bin"
+    "${dataHome}/browse/bin"
   ];
 
   # Ensure Corepack shims are installed once during activation so `pnpm`
@@ -43,5 +44,11 @@ in {
     if [[ ! -d ${dataHome}/cto/lib/node_modules/claude-token-optimizer ]]; then
       ${nodejs}/bin/npm install -g --prefix ${dataHome}/cto claude-token-optimizer
     fi
+  '';
+
+  # Install the Browserbase browse CLI globally
+  home.activation."install-browse" = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    mkdir -p ${dataHome}/browse
+    PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/browse browse@latest
   '';
 }
