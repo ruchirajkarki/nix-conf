@@ -5,6 +5,8 @@
     jq
     fd
     mutagen
+    oci-cli
+    ollama
 
     curl
     wget
@@ -40,6 +42,8 @@
       "yt-dlp"
       "git-extras"
       "btop"
+      "mistral-vibe"
+      "vercel"
     ];
 
     casks = [
@@ -62,6 +66,8 @@
       "raycast"
       "stats"
       "docker-desktop"
+      "cloudflare-warp"
+      "free-download-manager"
     ];
   };
 }
