@@ -7,6 +7,10 @@
     mutagen
     oci-cli
     ollama
+    colima
+    docker-client
+    docker-compose
+    docker-buildx
 
     curl
     wget
@@ -51,7 +55,7 @@
       "google-chrome"
       "bitwarden"
       "claude"
-      "claude-code"
+      "claude-code@latest"
       "localsend"
       "ghostty"
       "pearcleaner"
@@ -65,9 +69,10 @@
       "kde-connect"
       "raycast"
       "stats"
-      "docker-desktop"
       "cloudflare-warp"
       "free-download-manager"
+      "jordanbaird-ice"
+      "heroic"
     ];
   };
 }

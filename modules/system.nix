@@ -1,5 +1,4 @@
-{pkgs, ...}:
-{
+{pkgs, ...}: {
   system.primaryUser = "ruchirajkarki";
   system = {
     stateVersion = 5;
@@ -7,6 +6,8 @@
     defaults = {
       dock = {
         autohide = true;
+        autohide-delay = 0.0;
+        autohide-time-modifier = 0.15;
         show-recents = false;
         orientation = "right";
         static-only = true;
@@ -97,6 +98,11 @@
           WebKitDeveloperExtras = true;
           IncludeInternalDebugMenu = true;
         };
+      };
+
+      universalaccess = {
+        reduceMotion = true;
+        reduceTransparency = true;
       };
 
       loginwindow = {
