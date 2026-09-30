@@ -12,7 +12,6 @@
   corepackHome = "${dataHome}/corepack";
   localBin = "${homeDirectory}/.local/bin";
   ctoPackages = "${dataHome}/cto-packages";
-  routerHome = "${dataHome}/9router";
 in {
   home.packages = [
     nodejs # JavaScript runtime
@@ -29,7 +28,6 @@ in {
     pnpmHome
     "${dataHome}/cto/bin"
     "${dataHome}/browse/bin"
-    "${dataHome}/9router/bin"
   ];
 
   # Ensure Corepack shims are installed once during activation so `pnpm`
@@ -52,13 +50,5 @@ in {
   home.activation."install-browse" = lib.hm.dag.entryAfter ["writeBoundary"] ''
     mkdir -p ${dataHome}/browse
     PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/browse browse@latest
-  '';
-
-  # Install 9Router CLI globally
-  home.activation."install-9router" = lib.hm.dag.entryAfter ["writeBoundary"] ''
-    mkdir -p ${dataHome}/9router
-    if [[ ! -d ${dataHome}/9router/lib/node_modules/9router ]]; then
-      PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/9router 9router
-    fi
   '';
 }

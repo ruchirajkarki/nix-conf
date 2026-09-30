@@ -144,6 +144,33 @@
         print("\n".join(sorted(m["id"] for m in d["data"])) if "data" in d else d)
         '
         }
+
+        claude-deep() {
+          local env_file="$HOME/.config/deepseek.env"
+
+          if [ ! -r "$env_file" ]; then
+            echo "claude-deep: missing $env_file (needs DEEPSEEK_API_KEY=...)" >&2
+            return 1
+          fi
+
+          local key
+          key=$(grep -m1 '^DEEPSEEK_API_KEY=' "$env_file" | cut -d= -f2-)
+
+          if [ -z "$key" ]; then
+            echo "claude-deep: DEEPSEEK_API_KEY not set in $env_file" >&2
+            return 1
+          fi
+
+          local model="''${DEEPSEEK_MODEL:-deepseek-flash}"
+
+          ANTHROPIC_AUTH_TOKEN="$key" \
+          ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic" \
+          ANTHROPIC_MODEL="$model" \
+          ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
+          ANTHROPIC_DEFAULT_OPUS_MODEL="$model" \
+          ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" \
+          command claude "$@"
+        }
       ''
     ];
   };
@@ -186,5 +213,9 @@
     dcd = "docker-compose down";
     dcb = "docker-compose build";
     dcl = "docker-compose logs";
+
+    # DeepSeek model aliases
+    claude-deep-flash = "DEEPSEEK_MODEL=deepseek-flash claude-deep";
+    claude-deep-pro = "DEEPSEEK_MODEL=deepseek-v4-pro claude-deep";
   };
 }

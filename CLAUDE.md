@@ -47,3 +47,11 @@ Because `specialArgs = inputs // {inherit username useremail hostname;}`, every 
 - Commit messages follow Conventional Commits (`feat(home): ...`, `fix(modules): ...`).
 - Before committing: run `nix build` for the host and `nix flake check`. When touching `home/git.nix` specifically, be aware activation overwrites `~/.gitconfig`.
 - Never commit secrets; verify `hostname`, `username`, `useremail` in `flake.nix` are correct before deploying.
+
+## Project Agents & Special Implementations
+
+### DeepSeek Integration
+- **Implementation**: Created a `claude-deep` wrapper function in `home/shell.nix`.
+- **Purpose**: Allows using the Claude CLI with DeepSeek's Anthropic-compatible API.
+- **Mechanism**: Overrides `ANTHROPIC_BASE_URL` to `https://api.deepseek.com/anthropic` and reads the API key from `~/.config/deepseek.env`.
+- **Model Mapping**: Default models (Sonnet/Opus/Haiku) are mapped to `deepseek-chat`.
