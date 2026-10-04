@@ -51,4 +51,19 @@ in {
     mkdir -p ${dataHome}/browse
     PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/browse browse@latest
   '';
+
+  # Install Playwright MCP and register it with Claude Code (user scope) as a
+  # headless browser driving the Homebrew Google Chrome. ~/.claude.json is
+  # mutable app state, so it's registered via the CLI rather than a managed file.
+  home.activation."install-playwright-mcp" = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    mkdir -p ${dataHome}/playwright-mcp ${config.xdg.cacheHome}/playwright-claude
+    PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/playwright-mcp @playwright/mcp@latest
+    if [[ -x /opt/homebrew/bin/claude ]]; then
+      /opt/homebrew/bin/claude mcp remove -s user playwright >/dev/null 2>&1 || true
+      /opt/homebrew/bin/claude mcp add -s user playwright -- \
+        ${nodejs}/bin/node ${dataHome}/playwright-mcp/lib/node_modules/@playwright/mcp/cli.js \
+        --headless --browser chrome \
+        --user-data-dir ${config.xdg.cacheHome}/playwright-claude
+    fi
+  '';
 }
