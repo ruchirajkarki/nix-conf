@@ -54,4 +54,11 @@ Because `specialArgs = inputs // {inherit username useremail hostname;}`, every 
 - **Implementation**: Created a `claude-deep` wrapper function in `home/shell.nix`.
 - **Purpose**: Allows using the Claude CLI with DeepSeek's Anthropic-compatible API.
 - **Mechanism**: Overrides `ANTHROPIC_BASE_URL` to `https://api.deepseek.com/anthropic` and reads the API key from `~/.config/deepseek.env`.
-- **Model Mapping**: Default models (Sonnet/Opus/Haiku) are mapped to `deepseek-chat`.
+- **Model Mapping**: Default models (Sonnet/Opus/Haiku) are mapped to `deepseek-flash`.
+- **Switching**: Use `claude-deep-flash` or `claude-deep-pro` aliases.
+
+### Tavily Integration
+- **Purpose**: Web search and research capabilities for the agent.
+- **CLI**: Installed via `pipx install tavily-cli`.
+- **Skills**: Installed via `npx skills add tavily-ai/skills`.
+- **Auth**: Managed via `tvly login`.
