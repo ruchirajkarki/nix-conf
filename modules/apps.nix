@@ -74,6 +74,11 @@
       "free-download-manager"
       "jordanbaird-ice"
       "heroic"
+
+      # Game dev: Godot plus the toolchain it needs for Android export
+      "godot"
+      "temurin@17"
+      "android-commandlinetools"
     ];
   };
 }
