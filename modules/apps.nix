@@ -7,6 +7,7 @@
     mutagen
     oci-cli
     ollama
+    gemini-cli
     colima
     docker-client
     docker-compose
