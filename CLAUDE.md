@@ -12,32 +12,36 @@ A personal `nix-darwin` + `home-manager` flake that declaratively configures a s
 
 ## Commands
 
-- `make deploy` — build and switch (`nix build` then `sudo ./result/sw/bin/darwin-rebuild switch --flake .#Ruchis-MacBook-Air`). This is the standard way to apply changes.
-- `nix build .#darwinConfigurations.Ruchis-MacBook-Air.system --extra-experimental-features 'nix-command flakes'` — build only, without switching; use this to verify a change evaluates/builds before applying it.
-- `./result/sw/bin/darwin-rebuild switch --flake .#Ruchis-MacBook-Air` — apply an already-built result (requires `sudo`).
-- `darwin-rebuild switch --flake .#Ruchis-MacBook-Air --dry-run` — preview what a switch would change.
-- `nix flake check` — validate the flake (evaluation checks).
-- `nix fmt` — format all `.nix` files with Alejandra (the configured `formatter`). Run this before committing Nix changes.
+- `make deploy` — build and switch (requires `sudo`). The standard way to apply changes.
+- `make build` — build only; use it to verify a change evaluates/builds before applying.
+- `make dry-run` — build, then preview what a switch would change.
+- `make check` — `nix flake check`.
+- `make fmt` — format all `.nix` files with Alejandra (`nix fmt .`; bare `nix fmt` reads stdin). Run before committing.
+- `make gc` — prune generations older than 14 days and GC/optimise the store right now.
 
-There is no test suite; correctness is verified by `nix build` / `nix flake check` succeeding and, for risky changes, a dry-run switch.
+New files must be `git add`ed (or `git add -N`) before Nix can see them. There is no test suite; correctness is verified by `make build` / `make check` succeeding and, for risky changes, a dry run.
 
 ## Architecture
 
+Nix is installed and managed by **Determinate Nix**, so `nix.enable = false`. That makes `nix.settings`, `nix.gc` and `nix.optimise` unusable: daemon settings belong in `/etc/nix/nix.custom.conf`, and GC is a custom launchd daemon (`org.nixos.nix-gc`, weekly) in `modules/nix-core.nix`.
+
 Entry point is `flake.nix`: it pins `hostname`, `username`, and `useremail` as local `let` bindings and threads them into every module via `specialArgs`. The `darwinConfigurations.<hostname>` output composes:
 
-1. **System modules** (`modules/`), imported directly into `darwinSystem`:
-   - `nix-core.nix` — core Nix daemon settings (flakes enabled, unfree allowed).
-   - `system.nix` — macOS defaults (Dock, trackpad, keyboard, Finder, login window, etc).
-   - `apps.nix` — all package installation: `environment.systemPackages` (nixpkgs CLI tools) plus the `homebrew` block (`brews`/`casks`/`masApps`). GUI apps and anything not in nixpkgs go here as Homebrew casks; `onActivation.cleanup = "zap"` means casks removed from this list get uninstalled on the next `deploy`.
-   - `host-users.nix` — hostname/computerName and the macOS user account, parameterized by the `hostname`/`username` passed via `specialArgs`.
-2. **nix-homebrew module** — manages the Homebrew installation itself (separate from `apps.nix`, which manages what Homebrew installs); configured inline in `flake.nix`.
-3. **home-manager module** — bridges to `home/default.nix`, which imports the per-concern user modules (`shell.nix`, `core.nix`, `node.nix`, `git.nix`, `gh.nix`, `starship.nix`, `fzf-bat.nix`, `neovim.nix`). `useGlobalPkgs`/`useUserPackages` are enabled so Home Manager shares the system `nixpkgs` evaluation.
+1. **System modules** (`modules/`):
+   - `nix-core.nix` — nixpkgs settings, plus the weekly Nix GC daemon and the Homebrew cache-cleanup agent.
+   - `system.nix` — macOS defaults (Dock, Finder, trackpad, keyboard, screenshots, login window, etc). Prefer typed `system.defaults.*` options; use `CustomUserPreferences` only for keys nix-darwin has no option for.
+   - `packages.nix` — `environment.systemPackages` (plain nixpkgs CLI tools) and `fonts.packages`.
+   - `homebrew.nix` — `nix-homebrew` (the Homebrew install itself) and the `homebrew` block (`brews`/`casks`). `onActivation.cleanup = "zap"` means anything removed from this list is uninstalled, app data included, on the next deploy.
+   - `host-users.nix` — hostname/computerName and the macOS user account.
+2. **home-manager** — `home/default.nix` imports the per-concern user modules (`shell.nix`, `core.nix`, `node.nix`, `git.nix`, `gh.nix`, `starship.nix`, `fzf-bat.nix`, `neovim.nix`). The Neovim Lua config lives in `home/nvim/` and is linked to `~/.config/nvim`.
+
+Where things go: a tool with a home-manager `programs.*` module is configured in `home/` (don't also list it as a package); plain packages go in `modules/packages.nix`; GUI apps and anything missing from nixpkgs go in `modules/homebrew.nix`.
 
 Because `specialArgs = inputs // {inherit username useremail hostname;}`, every module (system and home-manager alike) can destructure `username`, `useremail`, `hostname`, plus any flake input, directly from its function arguments — that's the mechanism that keeps the machine identity centralized in `flake.nix` instead of duplicated across modules.
 
 `home/git.nix` pulls in `gitalias` (170+ short git aliases) and `home/gh.nix` pulls in `awesome-gh-aliases` for the GitHub CLI; both are documented in full in `README.md` if alias behavior needs to be looked up.
 
-`scripts/install-rosetta.sh` / `uninstall-rosetta.sh` are wrapped into packages via `writeShellScriptBin` in `apps.nix` and exposed as the `install-rosetta` / `uninstall-rosetta` commands in the resulting system.
+`scripts/install-rosetta.sh` / `uninstall-rosetta.sh` are wrapped into packages via `writeShellScriptBin` in `packages.nix` and exposed as the `install-rosetta` / `uninstall-rosetta` commands in the resulting system.
 
 ## Conventions
 

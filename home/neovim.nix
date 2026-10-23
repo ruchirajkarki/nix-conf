@@ -1,8 +1,4 @@
-{
-  pkgs,
-  ...
-}: {
-  # Neovim with kickstart-based config
+{pkgs, ...}: {
   programs.neovim = {
     enable = true;
     defaultEditor = true;
@@ -13,8 +9,6 @@
 
     # Extra packages available in Neovim's PATH
     extraPackages = with pkgs; [
-      ripgrep
-      fd
       gcc
       # JavaScript / TypeScript
       prettier
@@ -24,16 +18,10 @@
     ];
   };
 
-  # Our custom Neovim config - fully managed by nix
-  xdg.configFile = {
-    "nvim/init.lua".source = ../lua/init.lua;
-    "nvim/lua/custom" = {
-      source = ../lua/custom;
-      recursive = true;
-    };
-    "nvim/lua/kickstart" = {
-      source = ../lua/kickstart;
-      recursive = true;
-    };
+  # kickstart-based config, see ./nvim. Linked file-by-file so plugin
+  # managers can still write lockfiles next to it.
+  xdg.configFile."nvim" = {
+    source = ./nvim;
+    recursive = true;
   };
 }

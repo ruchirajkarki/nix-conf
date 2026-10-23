@@ -28,9 +28,9 @@
       pull.rebase = true;
 
       alias = {
-        # gitalias v0.x - Essential goal of Gitalias is to turns git command 
+        # gitalias v0.x - Essential goal of Gitalias is to turns git command
         # into shortest possible sequence of characters (an alias) where the
-        # alias does not have to be remembered but it can be mnemotechnically 
+        # alias does not have to be remembered but it can be mnemotechnically
         # derived from the full command.
         # https://github.com/ruchirajkarki/gitalias
 

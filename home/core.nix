@@ -1,27 +1,4 @@
-{
-  pkgs,
-  ...
-}: {
-  home.packages = with pkgs; [
-    # archives
-    xz
-    zstd
-
-    # utils
-    ripgrep
-    yq-go
-
-    # GNU variants, deliberately shadowing the BSD tools macOS ships
-    gnused
-    gnutar
-    gawk
-    gnupg
-
-    # productivity
-    zoxide
-    tmux
-  ];
-
+{...}: {
   programs = {
     direnv = {
       enable = true;
@@ -61,13 +38,11 @@
       enable = true;
       extraConfig = ''
         set -g mouse on
-        bind r source-file ~/.tmux.conf \; display-message "Config reloaded!"
+        bind r source-file ~/.config/tmux/tmux.conf \; display-message "Config reloaded!"
         setw -g mode-keys vi
       '';
     };
   };
 
-  xdg = {
-    enable = true;
-  };
+  xdg.enable = true;
 }

@@ -20,6 +20,9 @@ in {
   home.sessionVariables = {
     PNPM_HOME = pnpmHome;
     COREPACK_HOME = corepackHome;
+    # Node-based CLIs (e.g. bw) fail TLS verification against Let's Encrypt
+    # chains unless they trust the Nix CA bundle.
+    NODE_EXTRA_CA_CERTS = "/etc/ssl/certs/ca-certificates.crt";
   };
 
   home.sessionPath = [

@@ -9,17 +9,15 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    nixpkgs-darwin.url = "github:nixos/nixpkgs/nixpkgs-unstable";
 
-    # home-manager, used for managing user configuration
     home-manager = {
       url = "github:nix-community/home-manager/master";
-      inputs.nixpkgs.follows = "nixpkgs-darwin";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
 
     darwin = {
       url = "github:lnl7/nix-darwin";
-      inputs.nixpkgs.follows = "nixpkgs-darwin";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
 
     # nix-homebrew pins brew 6.0.12, which predates the `command_wrapper`
@@ -37,7 +35,6 @@
   };
 
   outputs = inputs @ {
-    self,
     nixpkgs,
     darwin,
     home-manager,
@@ -56,25 +53,20 @@
       modules = [
         ./modules/nix-core.nix
         ./modules/system.nix
-        ./modules/apps.nix
+        ./modules/packages.nix
+        ./modules/homebrew.nix
         ./modules/host-users.nix
 
         nix-homebrew.darwinModules.nix-homebrew
-        {
-          nix-homebrew = {
-            enable = true;
-            user = "ruchirajkarki";
-            autoMigrate = true;
-          };
-        }
 
-        # home manager
         home-manager.darwinModules.home-manager
         {
-          home-manager.useGlobalPkgs = true;
-          home-manager.useUserPackages = true;
-          home-manager.extraSpecialArgs = specialArgs;
-          home-manager.users.${username} = import ./home;
+          home-manager = {
+            useGlobalPkgs = true;
+            useUserPackages = true;
+            extraSpecialArgs = specialArgs;
+            users.${username} = import ./home;
+          };
         }
       ];
     };

@@ -68,14 +68,6 @@
         fi
       '')
       ''
-        # General paths
-        export PATH="$PATH:$HOME/.local/bin:$HOME/go/bin"
-
-        # fzf previews and nicer defaults
-        export FZF_DEFAULT_OPTS="--height=40% --layout=reverse --border"
-        export FZF_CTRL_T_OPTS='--preview "bat --style=numbers --color=always {} | head -500"'
-        export FZF_ALT_C_OPTS='--preview "eza -lah --group-directories-first --icons {} | head -200"'
-
         # Autosuggestions: async + history strategy; use array-safe assignments
         typeset -ga ZSH_AUTOSUGGEST_STRATEGY
         ZSH_AUTOSUGGEST_STRATEGY=(history)
@@ -175,8 +167,10 @@
     ];
   };
 
+  home.sessionPath = ["$HOME/go/bin"];
+
   home.shellAliases = {
-    dd = "cd ~/nix-conf && make deploy";
+    nd = "cd ~/nix-conf && make deploy";
     cto = "${config.home.homeDirectory}/.local/share/cto/bin/cto";
 
     # pnpm dev aliases

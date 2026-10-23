@@ -1,7 +1,11 @@
-{pkgs, ...}: {
-  system.primaryUser = "ruchirajkarki";
+{
+  pkgs,
+  username,
+  ...
+}: {
   system = {
     stateVersion = 5;
+    primaryUser = username;
 
     defaults = {
       dock = {
@@ -13,7 +17,11 @@
         static-only = true;
         tilesize = 24;
         magnification = true;
+        minimize-to-application = true;
+        # Keep Spaces in a fixed order instead of reshuffling by recent use.
+        mru-spaces = false;
 
+        # Hot corners: 1 = disabled, 3 = app windows, 4 = desktop
         wvous-tl-corner = 1;
         wvous-bl-corner = 3;
         wvous-br-corner = 4;
@@ -21,11 +29,21 @@
 
       finder = {
         _FXShowPosixPathInTitle = true;
+        _FXSortFoldersFirst = true;
         AppleShowAllExtensions = true;
+        AppleShowAllFiles = true;
+        FXDefaultSearchScope = "SCcf"; # search the current folder
         FXEnableExtensionChangeWarning = false;
+        FXPreferredViewStyle = "Nlsv"; # list view
+        FXRemoveOldTrashItems = true; # empty Trash items after 30 days
+        NewWindowTarget = "Home";
         QuitMenuItem = true;
         ShowPathbar = true;
         ShowStatusBar = true;
+        ShowExternalHardDrivesOnDesktop = true;
+        ShowHardDrivesOnDesktop = true;
+        ShowMountedServersOnDesktop = true;
+        ShowRemovableMediaOnDesktop = true;
       };
 
       trackpad = {
@@ -47,57 +65,35 @@
         NSAutomaticPeriodSubstitutionEnabled = false;
         NSAutomaticQuoteSubstitutionEnabled = false;
         NSAutomaticSpellingCorrectionEnabled = false;
+        NSAutomaticWindowAnimationsEnabled = false;
+        NSDocumentSaveNewDocumentsToCloud = false;
         NSNavPanelExpandedStateForSaveMode = true;
         NSNavPanelExpandedStateForSaveMode2 = true;
+        # Ctrl+Cmd+drag anywhere on a window to move it.
+        NSWindowShouldDragOnGesture = true;
       };
 
-      CustomUserPreferences = {
-        ".GlobalPreferences" = {
-          AppleSpacesSwitchOnActivate = true;
-        };
-        NSGlobalDomain = {
-          WebKitDeveloperExtras = true;
-        };
-        "com.apple.finder" = {
-          ShowExternalHardDrivesOnDesktop = true;
-          ShowHardDrivesOnDesktop = true;
-          ShowMountedServersOnDesktop = true;
-          ShowRemovableMediaOnDesktop = true;
-          _FXSortFoldersFirst = true;
-          FXDefaultSearchScope = "SCcf";
-        };
-        "com.apple.desktopservices" = {
-          DSDontWriteNetworkStores = true;
-          DSDontWriteUSBStores = true;
-        };
-        "com.apple.spaces" = {
-          "spans-displays" = 0;
-        };
-        "com.apple.WindowManager" = {
-          EnableStandardClickToShowDesktop = 0;
-          StandardHideDesktopIcons = 0;
-          HideDesktop = 0;
-          StageManagerHideWidgets = 0;
-          StandardHideWidgets = 0;
-          AnimationSpeed = 5;
-        };
-        "com.apple.screensaver" = {
-          askForPassword = 1;
-          askForPasswordDelay = 0;
-        };
-        "com.apple.screencapture" = {
-          location = "~/Desktop";
-          type = "png";
-        };
-        "com.apple.AdLib" = {
-          allowApplePersonalizedAdvertising = false;
-        };
-        "com.apple.ImageCapture".disableHotPlug = true;
-        "com.apple.Safari" = {
-          IncludeDevelopMenu = true;
-          WebKitDeveloperExtras = true;
-          IncludeInternalDebugMenu = true;
-        };
+      controlcenter.BatteryShowPercentage = true;
+
+      screencapture = {
+        location = "~/Desktop";
+        type = "png";
+        disable-shadow = true;
+      };
+
+      screensaver = {
+        askForPassword = true;
+        askForPasswordDelay = 0;
+      };
+
+      spaces.spans-displays = false;
+
+      WindowManager = {
+        EnableStandardClickToShowDesktop = false;
+        StandardHideDesktopIcons = false;
+        HideDesktop = false;
+        StageManagerHideWidgets = false;
+        StandardHideWidgets = false;
       };
 
       universalaccess = {
@@ -108,6 +104,27 @@
       loginwindow = {
         GuestEnabled = false;
         SHOWFULLNAME = true;
+      };
+
+      # Keys without a typed nix-darwin option.
+      CustomUserPreferences = {
+        NSGlobalDomain = {
+          AppleSpacesSwitchOnActivate = true;
+          WebKitDeveloperExtras = true;
+        };
+        "com.apple.WindowManager".AnimationSpeed = 5;
+        "com.apple.desktopservices" = {
+          DSDontWriteNetworkStores = true;
+          DSDontWriteUSBStores = true;
+        };
+        "com.apple.AdLib".allowApplePersonalizedAdvertising = false;
+        "com.apple.ImageCapture".disableHotPlug = true;
+        "com.apple.TimeMachine".DoNotOfferNewDisksForBackup = true;
+        "com.apple.Safari" = {
+          IncludeDevelopMenu = true;
+          WebKitDeveloperExtras = true;
+          IncludeInternalDebugMenu = true;
+        };
       };
     };
 
@@ -122,23 +139,7 @@
   security.pam.services.sudo_local.touchIdAuth = true;
 
   programs.zsh.enable = true;
-  environment.shells = [
-    pkgs.zsh
-  ];
-
-  nix.enable = false;
+  environment.shells = [pkgs.zsh];
 
   time.timeZone = "Asia/Kathmandu";
-
-  fonts = {
-    packages = with pkgs; [
-      material-design-icons
-      font-awesome
-      nerd-fonts.fira-code
-      nerd-fonts.hack
-      nerd-fonts.symbols-only
-      nerd-fonts.jetbrains-mono
-      nerd-fonts.iosevka
-    ];
-  };
 }

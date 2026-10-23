@@ -1,15 +1,20 @@
-{...}: {
+{...}: let
+  fd = "fd --hidden --follow --exclude .git";
+in {
   programs.fzf = {
-    # enables and configures fzf (fuzzy finder)
     enable = true;
     enableZshIntegration = true;
-    defaultCommand = "fd --type f --hidden --follow --exclude .git";
+    defaultCommand = "${fd} --type f";
     defaultOptions = ["--height=40%" "--layout=reverse" "--border"];
-    fileWidget.command = "fd --type f --hidden --follow --exclude .git";
-    changeDirWidget.command = "fd --type d --hidden --follow --exclude .git";
+    fileWidget = {
+      command = "${fd} --type f";
+      options = ["--preview 'bat --style=numbers --color=always {} | head -500'"];
+    };
+    changeDirWidget = {
+      command = "${fd} --type d";
+      options = ["--preview 'eza -lah --group-directories-first --icons {} | head -200'"];
+    };
   };
-  programs.bat = {
-    # enables bat (cat clone with syntax highlighting)
-    enable = true;
-  };
+
+  programs.bat.enable = true;
 }
