@@ -50,6 +50,8 @@
 
       # creative / game dev
       "blender"
+      "unity"
+      "unity-hub"
 
       # productivity
       "raycast"
