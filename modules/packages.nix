@@ -29,6 +29,7 @@
     oci-cli
     ollama
     gemini-cli
+    uv # runs MCP servers via uvx (e.g. mcp-for-blender)
 
     (writeShellScriptBin "install-rosetta" (builtins.readFile ../scripts/install-rosetta.sh))
     (writeShellScriptBin "uninstall-rosetta" (builtins.readFile ../scripts/uninstall-rosetta.sh))
