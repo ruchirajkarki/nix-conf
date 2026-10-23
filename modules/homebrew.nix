@@ -48,6 +48,9 @@
       # media
       "iina"
 
+      # creative / game dev
+      "blender"
+
       # productivity
       "raycast"
       "obsidian"
