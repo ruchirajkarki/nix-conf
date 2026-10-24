@@ -53,6 +53,9 @@
       "unity"
       "unity-hub"
 
+      # music production
+      "fl-studio"
+
       # productivity
       "raycast"
       "obsidian"
