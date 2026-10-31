@@ -20,6 +20,9 @@ in {
   home.sessionVariables = {
     PNPM_HOME = pnpmHome;
     COREPACK_HOME = corepackHome;
+    # Node-based CLIs (e.g. bw) fail TLS verification against Let's Encrypt
+    # chains unless they trust the Nix CA bundle.
+    NODE_EXTRA_CA_CERTS = "/etc/ssl/certs/ca-certificates.crt";
   };
 
   home.sessionPath = [
@@ -27,6 +30,7 @@ in {
     localBin
     pnpmHome
     "${dataHome}/cto/bin"
+    "${dataHome}/browse/bin"
   ];
 
   # Ensure Corepack shims are installed once during activation so `pnpm`
@@ -42,6 +46,27 @@ in {
     mkdir -p ${dataHome}/cto
     if [[ ! -d ${dataHome}/cto/lib/node_modules/claude-token-optimizer ]]; then
       ${nodejs}/bin/npm install -g --prefix ${dataHome}/cto claude-token-optimizer
+    fi
+  '';
+
+  # Install the Browserbase browse CLI globally
+  home.activation."install-browse" = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    mkdir -p ${dataHome}/browse
+    PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/browse browse@latest
+  '';
+
+  # Install Playwright MCP and register it with Claude Code (user scope) as a
+  # headless browser driving the Homebrew Google Chrome. ~/.claude.json is
+  # mutable app state, so it's registered via the CLI rather than a managed file.
+  home.activation."install-playwright-mcp" = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    mkdir -p ${dataHome}/playwright-mcp ${config.xdg.cacheHome}/playwright-claude
+    PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/playwright-mcp @playwright/mcp@latest
+    if [[ -x /opt/homebrew/bin/claude ]]; then
+      /opt/homebrew/bin/claude mcp remove -s user playwright >/dev/null 2>&1 || true
+      /opt/homebrew/bin/claude mcp add -s user playwright -- \
+        ${nodejs}/bin/node ${dataHome}/playwright-mcp/lib/node_modules/@playwright/mcp/cli.js \
+        --headless --browser chrome \
+        --user-data-dir ${config.xdg.cacheHome}/playwright-claude
     fi
   '';
 }

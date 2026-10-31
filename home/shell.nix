@@ -20,29 +20,13 @@
       fi
     '';
     autosuggestion = {
-      enable = true; # enables command autosuggestions
+      enable = true;
     };
     syntaxHighlighting = {
-      enable = true; # enables syntax highlighting for the shell
+      enable = true;
     };
-    "oh-my-zsh" = {
-      enable = false;
-      theme = "agnoster";
-      plugins = [
-        "git"
-        "npm"
-        "node"
-        "yarn"
-        "docker"
-        "docker-compose"
-        "kubectl"
-        "helm"
-      ];
-    };
-    # Prefer XDG layout for Zsh configs (silence deprecation warning)
     dotDir = "${config.xdg.configHome}/zsh";
 
-    # Improve history behavior
     history = {
       size = 10000;
       save = 10000;
@@ -51,29 +35,27 @@
       expireDuplicatesFirst = true;
     };
 
-    # Helpful, low-risk Zsh options
     setOptions = [
-      "AUTO_CD" # cd by typing directory name
-      "INTERACTIVE_COMMENTS" # allow # comments in interactive shell
-      "EXTENDED_GLOB" # richer globbing
-      "HIST_IGNORE_DUPS" # ignore consecutive duplicates
-      "HIST_VERIFY" # edit before executing from history
+      "AUTO_CD"
+      "INTERACTIVE_COMMENTS"
+      "EXTENDED_GLOB"
+      "HIST_IGNORE_DUPS"
+      "HIST_VERIFY"
     ];
 
-    # Lightweight plugins (non-OMZ)
     plugins = [
       {
-        name = "fzf-tab"; # integrates fzf with Zsh's tab completion
+        name = "fzf-tab";
         src = pkgs.zsh-fzf-tab;
         file = "share/fzf-tab/fzf-tab.plugin.zsh";
       }
       {
-        name = "zsh-vi-mode"; # enables vi-like keybindings in Zsh
+        name = "zsh-vi-mode";
         src = pkgs.zsh-vi-mode;
         file = "share/zsh-vi-mode/zsh-vi-mode.plugin.zsh";
       }
       {
-        name = "zsh-autopair"; # automatically inserts and deletes matching pairs of delimiters
+        name = "zsh-autopair";
         src = pkgs.zsh-autopair;
         file = "share/zsh-autopair/autopair.zsh";
       }
@@ -86,31 +68,6 @@
         fi
       '')
       ''
-          # General paths
-          export PATH="$PATH:$HOME/bin:$HOME/.local/bin:$HOME/go/bin"
-
-        # Java (Homebrew OpenJDK)
-        export PATH="/opt/homebrew/opt/openjdk@21/bin:$PATH"
-        export CPPFLAGS="-I/opt/homebrew/opt/openjdk@21/include"
-
-        # Android SDK
-        export ANDROID_HOME="$HOME/Library/Android/sdk"
-        export PATH="$PATH:$ANDROID_HOME/platform-tools"
-        export PATH="$PATH:$ANDROID_HOME/tools/bin"
-        export PATH="$PATH:$ANDROID_HOME/emulator"
-
-        export PATH=/Users/ruchirajkarki/.mimocode/bin:$PATH
-
-        # Install NestJS CLI globally via pnpm if not already installed
-        # if command -v pnpm >/dev/null 2>&1 && ! command -v nest >/dev/null 2>&1; then
-        #   pnpm add -g @nestjs/cli >/dev/null 2>&1 || true
-        # fi
-
-        # fzf previews and nicer defaults
-        export FZF_DEFAULT_OPTS="--height=40% --layout=reverse --border"
-        export FZF_CTRL_T_OPTS='--preview "bat --style=numbers --color=always {} | head -500"'
-        export FZF_ALT_C_OPTS='--preview "eza -lah --group-directories-first --icons {} | head -200"'
-
         # Autosuggestions: async + history strategy; use array-safe assignments
         typeset -ga ZSH_AUTOSUGGEST_STRATEGY
         ZSH_AUTOSUGGEST_STRATEGY=(history)
@@ -133,30 +90,100 @@
         zle -N zle-keymap-select
         zle -N zle-line-init
         bindkey -M viins 'jk' vi-cmd-mode
+
+        claude-tr() {
+          local env_file="$HOME/.config/tokenrouter.env"
+
+          if [ ! -r "$env_file" ]; then
+            echo "claude-tr: missing $env_file (needs TOKENROUTER_API_KEY=...)" >&2
+            return 1
+          fi
+
+          local key
+          key=$(grep -m1 '^TOKENROUTER_API_KEY=' "$env_file" | cut -d= -f2-)
+
+          if [ -z "$key" ]; then
+            echo "claude-tr: TOKENROUTER_API_KEY not set in $env_file" >&2
+            return 1
+          fi
+
+          ANTHROPIC_AUTH_TOKEN="$key" \
+          ANTHROPIC_BASE_URL="https://api.tokenrouter.com" \
+          ANTHROPIC_MODEL="''${TOKENROUTER_MODEL:-z-ai/glm-5.3-free}" \
+          ANTHROPIC_DEFAULT_SONNET_MODEL="''${TOKENROUTER_SONNET_MODEL:-z-ai/glm-5.3-free}" \
+          ANTHROPIC_DEFAULT_OPUS_MODEL="''${TOKENROUTER_OPUS_MODEL:-z-ai/glm-5.3-free}" \
+          ANTHROPIC_DEFAULT_HAIKU_MODEL="''${TOKENROUTER_HAIKU_MODEL:-z-ai/glm-5.3-free}" \
+          command claude "$@"
+        }
+
+        # Show TokenRouter models available to the current API key.
+        claude-tr-models() {
+          local key
+          key=$(grep -m1 '^TOKENROUTER_API_KEY=' \
+            "$HOME/.config/tokenrouter.env" 2>/dev/null | cut -d= -f2-)
+
+          if [ -z "$key" ]; then
+            echo "claude-tr-models: no TOKENROUTER_API_KEY in ~/.config/tokenrouter.env" >&2
+            return 1
+          fi
+
+          curl -s \
+            -H "Authorization: Bearer $key" \
+            https://api.tokenrouter.com/v1/models \
+            | python3 -c '
+        import json, sys
+        d = json.load(sys.stdin)
+        print("\n".join(sorted(m["id"] for m in d["data"])) if "data" in d else d)
+        '
+        }
+
+        claude-deep() {
+          local env_file="$HOME/.config/deepseek.env"
+
+          if [ ! -r "$env_file" ]; then
+            echo "claude-deep: missing $env_file (needs DEEPSEEK_API_KEY=...)" >&2
+            return 1
+          fi
+
+          local key
+          key=$(grep -m1 '^DEEPSEEK_API_KEY=' "$env_file" | cut -d= -f2-)
+
+          if [ -z "$key" ]; then
+            echo "claude-deep: DEEPSEEK_API_KEY not set in $env_file" >&2
+            return 1
+          fi
+
+          local model="''${DEEPSEEK_MODEL:-deepseek-flash}"
+
+          ANTHROPIC_AUTH_TOKEN="$key" \
+          ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic" \
+          ANTHROPIC_MODEL="$model" \
+          ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
+          ANTHROPIC_DEFAULT_OPUS_MODEL="$model" \
+          ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" \
+          command claude "$@"
+        }
       ''
     ];
   };
 
+  home.sessionPath = ["$HOME/go/bin"];
+
   home.shellAliases = {
-    t = "turbo";
-    dd = "cd ~/nix-conf && make deploy";
+    nd = "cd ~/nix-conf && make deploy";
     cto = "${config.home.homeDirectory}/.local/share/cto/bin/cto";
 
-    # code = "code-insiders";
-
     # pnpm dev aliases
-    pi = "pnpm install";
+    # pi = "pnpm install";
     pd = "pnpm dev";
     pb = "pnpm build";
     pl = "pnpm lint";
     pt = "pnpm test";
 
-    lg = "lazygit";
-
     urldecode = "python3 -c 'import sys, urllib.parse as ul; print(ul.unquote_plus(sys.stdin.read()))'";
     urlencode = "python3 -c 'import sys, urllib.parse as ul; print(ul.quote_plus(sys.stdin.read()))'";
 
-    # Additional development-friendly aliases
+    # Git aliases
     gs = "git stash";
     gc = "git checkout";
     gpl = "git pull";
@@ -181,13 +208,8 @@
     dcb = "docker-compose build";
     dcl = "docker-compose logs";
 
-    # Kubernetes aliases
-    k = "kubectl";
-    kga = "kubectl get all";
-    kgn = "kubectl get nodes";
-    kgp = "kubectl get pods";
-    kgs = "kubectl get services";
-    kd = "kubectl describe";
-    kl = "kubectl logs";
+    # DeepSeek model aliases
+    claude-deep-flash = "DEEPSEEK_MODEL=deepseek-flash claude-deep";
+    claude-deep-pro = "DEEPSEEK_MODEL=deepseek-v4-pro claude-deep";
   };
 }
