@@ -17,17 +17,7 @@
     enable = true;
     lfs.enable = true;
 
-    # includes = [
-    #   {
-    #     # use diffrent email & name for work
-    #     path = "~/work/.gitconfig";
-    #     # condition = "gitdir:~/work/";
-    #     condition = "gitdir:/Users/ruchirajkarki/work/**";
-    #   }
-    # ];
-
     settings = {
-      # TODO replace with your own name & email
       user = {
         name = "ruchirajkarki";
         email = "ruchirajkarki@gmail.com";
@@ -38,9 +28,9 @@
       pull.rebase = true;
 
       alias = {
-        # gitalias v0.x - Essential goal of Gitalias is to turns git command 
+        # gitalias v0.x - Essential goal of Gitalias is to turns git command
         # into shortest possible sequence of characters (an alias) where the
-        # alias does not have to be remembered but it can be mnemotechnically 
+        # alias does not have to be remembered but it can be mnemotechnically
         # derived from the full command.
         # https://github.com/ruchirajkarki/gitalias
 

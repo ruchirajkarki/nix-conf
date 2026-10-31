@@ -1,6 +1,27 @@
-# please change 'hostname' to your hostname
-deploy:
-	nix build .#darwinConfigurations.Ruchis-MacBook-Air.system \
-	   --extra-experimental-features 'nix-command flakes'
+HOST  := Ruchis-MacBook-Air
+FLAKE := .\#$(HOST)
+NIX   := nix --extra-experimental-features 'nix-command flakes'
 
-	sudo ./result/sw/bin/darwin-rebuild switch --flake .#Ruchis-MacBook-Air
+.PHONY: deploy build check dry-run fmt update gc
+
+deploy: build ## build and switch
+	sudo ./result/sw/bin/darwin-rebuild switch --flake $(FLAKE)
+
+build: ## build without switching
+	$(NIX) build .#darwinConfigurations.$(HOST).system
+
+check: ## evaluate the flake
+	$(NIX) flake check
+
+dry-run: build ## show what a switch would change
+	sudo ./result/sw/bin/darwin-rebuild switch --flake $(FLAKE) --dry-run
+
+fmt: ## format nix files
+	$(NIX) fmt .
+
+update: ## bump flake inputs
+	$(NIX) flake update
+
+gc: ## delete generations older than 14 days, GC and optimise the store now
+	sudo nix-collect-garbage --delete-older-than 14d
+	nix store optimise

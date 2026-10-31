@@ -13,11 +13,6 @@
         # PR aliases
         pv = "pr view";
 
-        # Issue aliases
-        bugs = "issue list --label=\"bugs\"";
-        epicsBy = "issue list --author=\"$1\" --label=\"epic\"";
-        igrep = "!gh issue list --label=\"$1\" | grep -i $2";
-
         # User aliases
         user = "api user";
 
@@ -105,4 +100,3 @@
     };
   };
 }
-
