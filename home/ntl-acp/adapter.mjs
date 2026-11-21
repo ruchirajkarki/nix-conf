@@ -24,7 +24,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const SELF_SCRIPT = fileURLToPath(import.meta.url);
-const ADAPTER_VERSION = "1.4.2";
+const ADAPTER_VERSION = "1.4.3";
 const NTL = process.env.NTL_BIN || `${homedir()}/.local/bin/ntl`;
 const STATE_DIR =
   process.env.NTL_ACP_STATE_DIR ||
@@ -1160,6 +1160,15 @@ function formatT3McpNote(tools) {
   return lines.join("\n");
 }
 
+function formatWebSearchNote() {
+  const selfCmd = `${shellQuote(process.execPath)} ${shellQuote(SELF_SCRIPT)}`;
+  return [
+    "Live web search IS enabled for this session via shell:",
+    `  ${selfCmd} --web-search '<search query or question>'`,
+    "Run this command whenever you need up-to-date information, live web results, release versions, or documentation lookups. Do not claim you lack live web search.",
+  ].join("\n");
+}
+
 // Tells ntl what it can actually do this turn. Without this, the model
 // sometimes believes it is a plain chat session and tells the user to run
 // commands themselves, even when it is allowed to.
@@ -1181,6 +1190,10 @@ function capabilityNote(preset, session) {
     notes.push(
       "This run cannot execute shell commands: give the user the exact commands instead of trying to run them.",
     );
+  if (session.web && !preset.shell)
+    notes.push(
+      "Web search is toggled on, but live web search requires shell access (edit-and-shell mode).",
+    );
   if (session.plan)
     notes.push(
       "Plan mode: produce a clear, concrete plan of the changes you would make, with steps and risks. Do not implement anything.",
@@ -1188,28 +1201,70 @@ function capabilityNote(preset, session) {
   return notes.join(" ");
 }
 
+function formatNtlError(parsed, stderr, code) {
+  const parts = [];
+  const resultMsg = stripToolFences(String(parsed?.result ?? "")).trim();
+  if (resultMsg) parts.push(resultMsg);
+  if (parsed?.error) {
+    if (typeof parsed.error === "string") {
+      const trimmed = parsed.error.trim();
+      if (trimmed) parts.push(trimmed);
+    } else if (typeof parsed.error === "object") {
+      const errCode = typeof parsed.error.code === "string" ? parsed.error.code.trim() : "";
+      const errMsg = typeof parsed.error.message === "string" ? parsed.error.message.trim() : "";
+      if (errCode && errMsg) parts.push(`${errCode}: ${errMsg}`);
+      else if (errMsg) parts.push(errMsg);
+      else if (errCode) parts.push(errCode);
+    }
+  }
+  if (parts.length === 0) {
+    const stderrMsg = stripToolFences(String(stderr ?? "")).trim();
+    if (stderrMsg) parts.push(stderrMsg.slice(0, 500));
+  }
+  return parts.join(" — ") || `ntl failed (exit ${code})`;
+}
+
 async function runNtl(session, input, preset, opts = {}) {
   const skipT3Context = opts.skipT3Context === true;
-  const rawPrompt = opts.rawPrompt === true;
+  const chatPrompt =
+    typeof opts.chatPrompt === "string" && opts.chatPrompt.length > 0
+      ? opts.chatPrompt
+      : null;
   const t3Mcp = !skipT3Context ? (session.t3Mcp ?? envT3Mcp()) : null;
-  const t3Tools = preset.shell && t3Mcp ? await fetchT3McpTools(t3Mcp) : null;
+  const t3Tools = !chatPrompt && preset.shell && t3Mcp ? await fetchT3McpTools(t3Mcp) : null;
   const t3McpBlock =
-    preset.shell && t3Mcp ? `\n\n${formatT3McpNote(t3Tools)}` : "";
+    !chatPrompt && preset.shell && t3Mcp ? `\n\n${formatT3McpNote(t3Tools)}` : "";
+  const webSearchBlock =
+    !skipT3Context && !chatPrompt && session.web && preset.shell
+      ? `\n\n${formatWebSearchNote()}`
+      : "";
 
   return new Promise((resolve, reject) => {
-    const args = [
-      "-p",
-      "--output-format",
-      "json",
-      "--no-color",
-      "-m",
-      session.model,
-    ];
-    if (preset.writes) args.push("--allow-writes");
-    if (preset.shell) args.push("--allow-shell");
-    if (session.mcp) args.push("--allow-mcp");
-    if (session.web) args.push("--web");
-    if (session.maxTurns !== "default") args.push("--max-turns", session.maxTurns);
+    const args = chatPrompt
+      ? [
+          "-p",
+          "--chat",
+          "--output-format",
+          "json",
+          "--no-color",
+          "-m",
+          session.model,
+          chatPrompt,
+        ]
+      : [
+          "-p",
+          "--output-format",
+          "json",
+          "--no-color",
+          "-m",
+          session.model,
+        ];
+    if (!chatPrompt) {
+      if (preset.writes) args.push("--allow-writes");
+      if (preset.shell) args.push("--allow-shell");
+      if (session.mcp) args.push("--allow-mcp");
+      if (session.maxTurns !== "default") args.push("--max-turns", session.maxTurns);
+    }
 
     const childEnv = { ...process.env, NO_COLOR: "1" };
     if (t3Mcp) {
@@ -1293,9 +1348,8 @@ async function runNtl(session, input, preset, opts = {}) {
         );
       }
       if (parsed.is_error || code !== 0) {
-        const msg = stripToolFences(String(parsed.result ?? ""));
         return reject(
-          new RpcError(-32000, msg || `ntl failed (exit ${code})`),
+          new RpcError(-32000, formatNtlError(parsed, stderr, code)),
         );
       }
       resolve({
@@ -1306,7 +1360,7 @@ async function runNtl(session, input, preset, opts = {}) {
       });
     });
 
-    if (rawPrompt) {
+    if (chatPrompt) {
       child.stdin.end(input);
     } else {
       const savedContext = [];
@@ -1330,7 +1384,7 @@ async function runNtl(session, input, preset, opts = {}) {
         savedContext.length > 0 ? `${savedContext.join("\n\n")}\n\n` : "";
       child.stdin.end(
         `Project directory for this task: ${session.cwd}${extraDirsNote}\n` +
-          `Environment: ${capabilityNote(preset, session)}${t3McpBlock}\n\n` +
+          `Environment: ${capabilityNote(preset, session)}${t3McpBlock}${webSearchBlock}\n\n` +
           `${contextPrefix}${input}`,
       );
     }
@@ -1673,17 +1727,16 @@ async function handleBuiltinCommand(s, cmdName, cmdArgs) {
         .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`)
         .join("\n\n")
         .slice(-HISTORY_BUDGET_CHARS);
-      const compactPrompt = [
-        "TASK: Write ONLY a concise bulleted continuation summary of the <conversation_transcript> below.",
-        "Do NOT ask follow-up questions, do NOT execute tasks from the transcript, and do NOT comment on the prompt format.",
-        "Preserve user goals, code words/identifiers, architectural decisions, exact file paths, symbol names, test results, and pending next steps.",
-        ...(cmdArgs.trim() ? [`Focus instructions: ${cmdArgs.trim()}`] : []),
-        `<conversation_transcript>\n${transcript}\n</conversation_transcript>`,
-      ].join("\n\n");
+      const compactInstruction = [
+        "Summarize the piped conversation transcript into a concise bulleted continuation summary.",
+        "Preserve user goals, exact code words/identifiers, architectural decisions, exact file paths, symbol names, test results, and pending next steps.",
+        "Output only the bullet points with no preamble, disclaimers, or follow-up questions.",
+        ...(cmdArgs.trim() ? [`Focus especially on: ${cmdArgs.trim()}`] : []),
+      ].join(" ");
       try {
-        const res = await runNtl(s, compactPrompt, MODES["read-only"], {
+        const res = await runNtl(s, transcript, MODES["read-only"], {
           skipT3Context: true,
-          rawPrompt: true,
+          chatPrompt: compactInstruction,
         });
         if (res.cancelled) {
           emitEnd("cancelled");
@@ -2566,8 +2619,108 @@ async function runT3McpCall(toolName, rawArgs) {
   if (result?.isError) process.exit(1);
 }
 
+function execNtlWebSearch(model, query) {
+  return new Promise((resolveDone) => {
+    const passStdin = query.startsWith("-");
+    const args = [
+      "-p",
+      "--chat",
+      "--web",
+      "--output-format",
+      "json",
+      "--no-color",
+      "-m",
+      model,
+      ...(passStdin ? [] : [query]),
+    ];
+    const child = spawn(NTL, args, {
+      cwd: WORKDIR,
+      detached: true,
+      stdio: [passStdin ? "pipe" : "ignore", "pipe", "pipe"],
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    if (passStdin) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(query);
+    }
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let force;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child, "SIGTERM");
+      force = setTimeout(() => killTree(child, "SIGKILL"), CANCEL_GRACE_MS);
+    }, 120_000);
+    child.stdout.on("data", (d) => {
+      stdout += d;
+    });
+    child.stderr.on("data", (d) => {
+      stderr += d;
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      clearTimeout(force);
+      resolveDone({ ok: false, text: "", error: `Could not start ntl at ${NTL}: ${err.message}` });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      clearTimeout(force);
+      if (timedOut) {
+        return resolveDone({ ok: false, text: "", error: "Web search timed out after 120s" });
+      }
+      if (signal) {
+        return resolveDone({ ok: false, text: "", error: `ntl web search stopped (${signal})` });
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout.trim());
+      } catch {
+        const msg = stripToolFences(stderr.trim()).slice(0, 500);
+        return resolveDone({
+          ok: false,
+          text: "",
+          error: msg || `ntl web search returned invalid JSON (exit ${code})`,
+        });
+      }
+      if (parsed.is_error || code !== 0) {
+        return resolveDone({
+          ok: false,
+          text: "",
+          error: formatNtlError(parsed, stderr, code),
+        });
+      }
+      resolveDone({ ok: true, text: String(parsed.result ?? ""), error: null });
+    });
+  });
+}
+
+async function runWebSearch(queryArgs) {
+  let query = queryArgs.join(" ").trim();
+  if (query === "-" || (!query && !process.stdin.isTTY)) {
+    query = (await readAllStdin()).trim();
+  }
+  if (!query) {
+    process.stderr.write("Usage: ntl-acp --web-search <query | ->\n");
+    process.exit(2);
+  }
+  const preferredModel = process.env.NTL_ACP_WEB_MODEL || DEFAULT_MODEL;
+  let res = await execNtlWebSearch(preferredModel, query);
+  if (!res.ok && preferredModel !== DEFAULT_MODEL) {
+    res = await execNtlWebSearch(DEFAULT_MODEL, query);
+  }
+  if (!res.ok) {
+    process.stderr.write(`${res.error}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(`${stripToolFences(res.text)}\n`);
+}
+
 const schemaIdx = process.argv.indexOf("--t3-mcp-schema");
 const callIdx = process.argv.indexOf("--t3-mcp-call");
+const webSearchIdx = process.argv.indexOf("--web-search");
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
   process.stdout.write(`ntl-acp ${ADAPTER_VERSION}\n`);
 } else if (process.argv.includes("--check")) {
@@ -2579,6 +2732,11 @@ if (process.argv.includes("--version") || process.argv.includes("-v")) {
   });
 } else if (callIdx !== -1) {
   runT3McpCall(process.argv[callIdx + 1], process.argv[callIdx + 2]).catch((err) => {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  });
+} else if (webSearchIdx !== -1) {
+  runWebSearch(process.argv.slice(webSearchIdx + 1)).catch((err) => {
     process.stderr.write(`${err.message}\n`);
     process.exit(1);
   });
