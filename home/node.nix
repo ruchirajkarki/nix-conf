@@ -12,6 +12,7 @@
   corepackHome = "${dataHome}/corepack";
   localBin = "${homeDirectory}/.local/bin";
   ctoPackages = "${dataHome}/cto-packages";
+  freebuffPrefix = "${dataHome}/freebuff";
 in {
   home.packages = [
     nodejs # JavaScript runtime
@@ -31,6 +32,7 @@ in {
     pnpmHome
     "${dataHome}/cto/bin"
     "${dataHome}/browse/bin"
+    "${freebuffPrefix}/bin"
   ];
 
   # Ensure Corepack shims are installed once during activation so `pnpm`
@@ -53,6 +55,12 @@ in {
   home.activation."install-browse" = lib.hm.dag.entryAfter ["writeBoundary"] ''
     mkdir -p ${dataHome}/browse
     PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${dataHome}/browse browse@latest
+  '';
+
+  # Install the Freebuff coding agent CLI (npm-only, no nixpkgs package).
+  home.activation."install-freebuff" = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    mkdir -p ${freebuffPrefix}
+    PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${freebuffPrefix} freebuff@latest
   '';
 
   # Install Playwright MCP and register it with Claude Code (user scope) as a

@@ -8,6 +8,7 @@
     ./starship.nix
     ./fzf-bat.nix
     ./neovim.nix
+    ./colima.nix
   ];
 
   home = {

@@ -167,7 +167,11 @@
     ];
   };
 
-  home.sessionPath = ["$HOME/go/bin"];
+  home.sessionPath = [
+    "$HOME/.opencode/bin"
+    "$HOME/.kilo/bin"
+    "$HOME/go/bin"
+  ];
 
   home.shellAliases = {
     nd = "cd ~/nix-conf && make deploy";

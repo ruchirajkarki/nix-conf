@@ -21,10 +21,11 @@
         # Keep Spaces in a fixed order instead of reshuffling by recent use.
         mru-spaces = false;
 
-        # Hot corners: 1 = disabled, 3 = app windows, 4 = desktop
+        # Hot corners: 1 = disabled
         wvous-tl-corner = 1;
-        wvous-bl-corner = 3;
-        wvous-br-corner = 4;
+        wvous-tr-corner = 1;
+        wvous-bl-corner = 1;
+        wvous-br-corner = 1;
       };
 
       finder = {
@@ -113,6 +114,15 @@
           WebKitDeveloperExtras = true;
         };
         "com.apple.WindowManager".AnimationSpeed = 5;
+        # macOS 26/27 lengthened the Space-switch slide and ships no duration key
+        # for it: `workspaces-swoosh-animation-off` and
+        # `expose-animation-duration` no longer exist in the Dock binary, and the
+        # slide is a spring whose length is not exposed as a preference. The one
+        # working key is this one — it stops the Dock animating the switch at
+        # all. Trade-off: Dock-icon-follow stops working, including clicking an
+        # app icon to jump to the Space holding its windows (see
+        # AppleSpacesSwitchOnActivate above). Remove this line to restore both.
+        "com.apple.dock".workspaces-auto-swoosh = false;
         "com.apple.desktopservices" = {
           DSDontWriteNetworkStores = true;
           DSDontWriteUSBStores = true;

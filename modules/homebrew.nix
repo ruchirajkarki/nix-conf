@@ -48,11 +48,6 @@
       # media
       "iina"
 
-      # creative / game dev
-      "blender"
-      "unity"
-      "unity-hub"
-
       # music production
       "fl-studio"
 
@@ -67,7 +62,7 @@
       "pearcleaner"
       "localsend"
       "free-download-manager"
-      "cloudflare-warp"
+      "tailscale-app"
 
       # game dev: Godot plus the toolchain it needs for Android export
       "godot"

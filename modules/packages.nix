@@ -25,10 +25,15 @@
     docker-compose
     docker-buildx
 
+    # android - adb, fastboot
+    android-tools
+
     # cloud / AI
     oci-cli
-    ollama
+    codex # OpenAI Codex CLI (freebuff is npm-only, see home/node.nix)
     gemini-cli
+    google-cloud-sdk
+    gws
     uv # runs MCP servers via uvx (e.g. mcp-for-blender)
 
     (writeShellScriptBin "install-rosetta" (builtins.readFile ../scripts/install-rosetta.sh))
