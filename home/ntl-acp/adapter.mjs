@@ -250,6 +250,30 @@ function buildInput(session, text) {
   ].join("\n");
 }
 
+// ntl models sometimes leak their tool-call fences (```tool:run_shell …)
+// into the final answer text. T3 would execute those fences a second time
+// and paste the results back into the next user message, so the model sees
+// outputs it never ran itself and loops. Strip them: the internal tool
+// rounds already happened inside ntl, and the [Actions this turn] note
+// records what ran.
+function stripToolFences(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (!skipping && /^\s*```tool:/.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (/^\s*```\s*$/.test(line)) skipping = false;
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function toolKind(text) {
   if (/^(Ran|Running)\b/i.test(text)) return "execute";
   if (/^(Read|Viewed)\b/i.test(text)) return "read";
@@ -585,7 +609,7 @@ async function handle(method, params) {
         agentInfo: {
           name: "ntl-acp",
           title: "NoTokenLimit (ntl)",
-          version: "1.3.0",
+          version: "1.3.1",
         },
         authMethods: [],
       };
@@ -627,11 +651,17 @@ async function handle(method, params) {
       if (typeof saved.plan === "boolean") s.plan = saved.plan;
       if (typeof saved.mcp === "boolean") s.mcp = saved.mcp;
       if (Array.isArray(saved.history)) {
-        s.history = saved.history.filter(
-          (t) =>
-            (t?.role === "user" || t?.role === "assistant") &&
-            typeof t.text === "string",
-        );
+        s.history = saved.history
+          .filter(
+            (t) =>
+              (t?.role === "user" || t?.role === "assistant") &&
+              typeof t.text === "string",
+          )
+          .map((t) =>
+            t.role === "assistant"
+              ? { role: t.role, text: stripToolFences(t.text) }
+              : t,
+          );
       }
       sessions.set(s.id, s);
       for (const turn of s.history) {
@@ -738,6 +768,7 @@ async function handle(method, params) {
         const result = await runNtl(s, buildInput(s, text), effective);
         if (result.cancelled) return { stopReason: "cancelled" };
 
+        const reply = stripToolFences(result.text);
         const stored = text.replace(T3_INSTRUCTIONS, "").trim() || "(empty message)";
         const actionNote =
           result.actions.length > 0
@@ -745,13 +776,15 @@ async function handle(method, params) {
             : "";
         s.history.push(
           { role: "user", text: stored },
-          { role: "assistant", text: `${result.text}${actionNote}` },
+          { role: "assistant", text: `${reply}${actionNote}` },
         );
         persist(s);
-        update(s.id, {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: result.text },
-        });
+        if (reply) {
+          update(s.id, {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: reply },
+          });
+        }
         const unreported = result.files.filter(
           (file) => !result.actions.some((action) => action.includes(file)),
         );
