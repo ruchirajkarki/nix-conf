@@ -55,6 +55,10 @@ const MODES = {
 const WORKDIR = process.env.NTL_ACP_WORKDIR || "/";
 const TURN_TIMEOUT_MS = Number(process.env.NTL_ACP_TIMEOUT_MS) || 600_000;
 const CANCEL_GRACE_MS = 3000;
+const HISTORY_BUDGET_CHARS =
+  Number(process.env.NTL_ACP_HISTORY_CHARS) || 40_000;
+const MAX_ACTIONS_PER_TURN = 30;
+const T3_INSTRUCTIONS = /<t3_code_instructions>[\s\S]*?<\/t3_code_instructions>/g;
 const SESSION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // ntl prints one line per finished action on stderr: "  ✓ Read ..." or "  ✗ ...".
@@ -199,13 +203,19 @@ function promptText(blocks) {
 // so the adapter replays prior turns in each prompt.
 function buildInput(session, text) {
   if (session.history.length === 0) return text;
-  const past = session.history
-    .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`)
-    .join("\n\n");
+  const kept = [];
+  let used = 0;
+  for (let i = session.history.length - 1; i >= 0; i--) {
+    const t = session.history[i];
+    const line = `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`;
+    if (kept.length > 0 && used + line.length > HISTORY_BUDGET_CHARS) break;
+    kept.unshift(line);
+    used += line.length;
+  }
   return [
     "Continue this conversation. Earlier turns:",
     "",
-    past,
+    kept.join("\n\n"),
     "",
     `User: ${text}`,
     "",
@@ -223,12 +233,13 @@ function toolKind(text) {
 }
 
 // Turns one stderr line from ntl into an ACP update while the turn runs.
-function reportProgress(session, raw) {
+function reportProgress(session, raw, actions) {
   const line = raw.trim();
   if (line === "") return;
   const m = line.match(TOOL_LINE);
   if (m) {
     const text = m[2].trim();
+    actions.push(text);
     update(session.id, {
       sessionUpdate: "tool_call",
       toolCallId: randomUUID(),
@@ -240,7 +251,7 @@ function reportProgress(session, raw) {
   }
   update(session.id, {
     sessionUpdate: "agent_thought_chunk",
-    content: { type: "text", text: line },
+    content: { type: "text", text: `${line}\n` },
   });
 }
 
@@ -287,7 +298,14 @@ function runNtl(session, input) {
     let stdout = "";
     let stderr = "";
     let partial = "";
-    const timer = setTimeout(() => killTree(child, "SIGTERM"), TURN_TIMEOUT_MS);
+    const actions = [];
+    let timedOut = false;
+    let force;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child, "SIGTERM");
+      force = setTimeout(() => killTree(child, "SIGKILL"), CANCEL_GRACE_MS);
+    }, TURN_TIMEOUT_MS);
 
     child.stdout.on("data", (d) => {
       stdout += d;
@@ -297,7 +315,7 @@ function runNtl(session, input) {
       partial += d;
       let nl = partial.indexOf("\n");
       while (nl !== -1) {
-        reportProgress(session, partial.slice(0, nl));
+        reportProgress(session, partial.slice(0, nl), actions);
         partial = partial.slice(nl + 1);
         nl = partial.indexOf("\n");
       }
@@ -311,9 +329,18 @@ function runNtl(session, input) {
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      clearTimeout(force);
       running.delete(session.id);
-      reportProgress(session, partial);
+      reportProgress(session, partial, actions);
       if (session.cancelled) return resolve({ cancelled: true });
+      if (timedOut) {
+        return reject(
+          new RpcError(
+            -32000,
+            `ntl timed out after ${TURN_TIMEOUT_MS / 1000}s`,
+          ),
+        );
+      }
       if (signal) {
         return reject(
           new RpcError(-32000, `ntl stopped (${signal}) before finishing`),
@@ -339,6 +366,7 @@ function runNtl(session, input) {
         cancelled: false,
         text: parsed.result ?? "",
         files: Array.isArray(parsed.files_changed) ? parsed.files_changed : [],
+        actions: actions.slice(-MAX_ACTIONS_PER_TURN),
       });
     });
 
@@ -372,7 +400,7 @@ async function handle(method, params) {
             embeddedContext: true,
           },
         },
-        agentInfo: { name: "ntl-acp", version: "1.1.0" },
+        agentInfo: { name: "ntl-acp", version: "1.2.0" },
         authMethods: [],
       };
 
@@ -469,16 +497,24 @@ async function handle(method, params) {
         const result = await runNtl(s, buildInput(s, text));
         if (result.cancelled) return { stopReason: "cancelled" };
 
+        const stored = text.replace(T3_INSTRUCTIONS, "").trim() || "(empty message)";
+        const actionNote =
+          result.actions.length > 0
+            ? `\n\n[Actions this turn: ${result.actions.join("; ")}]`
+            : "";
         s.history.push(
-          { role: "user", text },
-          { role: "assistant", text: result.text },
+          { role: "user", text: stored },
+          { role: "assistant", text: `${result.text}${actionNote}` },
         );
         persist(s);
         update(s.id, {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: result.text },
         });
-        for (const file of result.files) {
+        const unreported = result.files.filter(
+          (file) => !result.actions.some((action) => action.includes(file)),
+        );
+        for (const file of unreported) {
           const toolCallId = randomUUID();
           update(s.id, {
             sessionUpdate: "tool_call",
