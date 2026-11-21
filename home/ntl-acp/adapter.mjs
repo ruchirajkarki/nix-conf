@@ -4,17 +4,20 @@
 // and runs each prompt through `ntl -p`, which reuses the CLI's existing sign-in.
 // stdout carries protocol messages only; diagnostics go to stderr.
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -27,20 +30,23 @@ const STATE_DIR =
     "ntl-acp",
     "sessions",
   );
+const ATTACHMENTS_DIR = join(STATE_DIR, "attachments");
 const DEFAULT_MODEL = "claude-opus-5.5";
 const claude = (family, version) => ["claude", family, version].join("-");
-const MODELS = [
-  "claude-opus-5.5",
-  "claude-opus-5",
-  "claude-opus-4.8",
-  claude("sonnet", "5.5"),
-  claude("sonnet", "5"),
-  claude("haiku", "4.5"),
-  "gemini-3.6-flash",
-  "gemini-3.1-pro",
-  "glm-5.1",
-  "auto",
+const FALLBACK_MODELS = [
+  { id: "claude-opus-5.5", name: "Claude Opus 5.5" },
+  { id: "claude-opus-5", name: "Claude Opus 5" },
+  { id: "claude-opus-4.8", name: "Claude Opus 4.8" },
+  { id: claude("sonnet", "5.5"), name: "Claude Sonnet 5.5" },
+  { id: claude("sonnet", "5"), name: "Claude Sonnet 5" },
+  { id: claude("haiku", "4.5"), name: "Claude Haiku 4.5" },
+  { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
+  { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
+  { id: "glm-5.1", name: "GLM 5.1" },
+  { id: "auto", name: "Auto" },
 ];
+const MODEL_CACHE_TTL_MS = 300_000;
+const SKILL_CACHE_TTL_MS = 10_000;
 // Permission presets. ntl applies one preset to the whole run; it has no
 // per-action approval prompts.
 const MODES = {
@@ -62,9 +68,12 @@ const CANCEL_GRACE_MS = 3000;
 const PERMISSION_TIMEOUT_MS =
   Number(process.env.NTL_ACP_PERMISSION_TIMEOUT_MS) || 180_000;
 const HISTORY_BUDGET_CHARS =
-  Number(process.env.NTL_ACP_HISTORY_CHARS) || 40_000;
+  Number(process.env.NTL_ACP_HISTORY_CHARS) || 60_000;
 const MAX_ACTIONS_PER_TURN = 30;
 const T3_INSTRUCTIONS = /<t3_code_instructions>[\s\S]*?<\/t3_code_instructions>/g;
+const RUNTIME_INFO = /<runtime_info>[\s\S]*?<\/runtime_info>/g;
+const PR_LINKING = /<pull_request_linking>[\s\S]*?<\/pull_request_linking>/g;
+const USER_REQUEST_WRAP = /^\s*<user_request>\s*([\s\S]*?)\s*<\/user_request>\s*$/;
 const SESSION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // ntl prints one line per finished action on stderr: "  ✓ Read ..." or "  ✗ ...".
@@ -79,6 +88,7 @@ function defaultMode() {
 }
 const DEFAULT_MODE = defaultMode();
 const DEFAULT_MCP = process.env.NTL_ACP_ALLOW_MCP === "1";
+const DEFAULT_WEB = process.env.NTL_ACP_ALLOW_WEB === "1";
 // Tool rounds ntl may use per turn. "default" leaves ntl's own cap (25).
 const MAX_TURNS_OPTIONS = [
   { value: "default", name: "Default (25)" },
@@ -88,12 +98,16 @@ const MAX_TURNS_OPTIONS = [
 
 const sessions = new Map();
 const running = new Map();
+const inFlightPrompts = new Map();
 // Requests the adapter sends to the client (e.g. session/request_permission).
 const clientCalls = new Map();
 let nextClientCallId = 10_000;
+let initialized = false;
 // Capabilities the client advertised during initialize. Omitted means
 // unsupported, per the ACP spec.
 let clientCapabilities = {};
+let modelCache = null;
+const skillCache = new Map();
 
 class RpcError extends Error {
   constructor(code, message, data) {
@@ -138,15 +152,67 @@ function selectOption(id, name, category, currentValue, options) {
   return { id, name, category, type: "select", currentValue, options };
 }
 
+function getModels() {
+  const now = Date.now();
+  if (modelCache && now - modelCache.at < MODEL_CACHE_TTL_MS) {
+    return modelCache.models;
+  }
+  let discovered = [];
+  try {
+    const out = execFileSync(NTL, ["models", "--no-color"], {
+      encoding: "utf8",
+      timeout: 4000,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    const seen = new Set();
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(
+        /^\s*\u2713\s+(.+?)\s{2,}([a-z0-9][a-z0-9._-]+)(?:\s+\(default\))?\s*$/iu,
+      );
+      if (!m) continue;
+      const id = m[2].trim();
+      const name = m[1].trim();
+      if (!seen.has(id)) {
+        seen.add(id);
+        discovered.push({ id, name });
+      }
+    }
+  } catch {
+    discovered = [];
+  }
+  const models = discovered.length > 0 ? discovered : FALLBACK_MODELS;
+  modelCache = { at: now, models };
+  return models;
+}
+
+function isKnownModel(id) {
+  if (typeof id !== "string" || id.trim() === "") return false;
+  return (
+    getModels().some((m) => m.id === id) ||
+    FALLBACK_MODELS.some((m) => m.id === id)
+  );
+}
+
+function modelState(s) {
+  const models = getModels();
+  const availableModels = models.map((m) => ({ modelId: m.id, name: m.name }));
+  if (!availableModels.some((m) => m.modelId === s.model)) {
+    availableModels.unshift({ modelId: s.model, name: s.model });
+  }
+  return {
+    currentModelId: s.model,
+    availableModels,
+  };
+}
+
 function configOptions(s) {
+  const modelChoices = getModels().map((m) => ({ value: m.id, name: m.name }));
+  if (!modelChoices.some((m) => m.value === s.model)) {
+    modelChoices.unshift({ value: s.model, name: s.model });
+  }
   return [
-    selectOption(
-      "model",
-      "Model",
-      "model",
-      s.model,
-      MODELS.map((m) => ({ value: m, name: m })),
-    ),
+    selectOption("model", "Model", "model", s.model, modelChoices),
     selectOption(
       "mode",
       "Permissions",
@@ -154,25 +220,77 @@ function configOptions(s) {
       s.mode,
       Object.entries(MODES).map(([value, m]) => ({ value, name: m.label })),
     ),
+    selectOption("web", "Web search", "other", s.web ? "on" : "off", [
+      { value: "off", name: "Off" },
+      { value: "on", name: "On" },
+    ]),
     selectOption("mcp", "MCP tools", "other", s.mcp ? "on" : "off", [
       { value: "off", name: "Off" },
       { value: "on", name: "On" },
     ]),
-    selectOption("max_turns", "Max tool rounds", "other", s.maxTurns, MAX_TURNS_OPTIONS),
+    selectOption(
+      "max_turns",
+      "Max tool rounds",
+      "other",
+      s.maxTurns,
+      MAX_TURNS_OPTIONS,
+    ),
   ];
+}
+
+function parseAdditionalDirectories(dirs) {
+  if (dirs === undefined) return [];
+  if (!Array.isArray(dirs)) {
+    throw new RpcError(
+      -32602,
+      "additionalDirectories must be an array of absolute paths",
+    );
+  }
+  const seen = new Set();
+  const out = [];
+  for (const d of dirs) {
+    if (typeof d !== "string" || !isAbsolute(d)) {
+      throw new RpcError(
+        -32602,
+        "additionalDirectories entries must be absolute paths",
+      );
+    }
+    if (!seen.has(d)) {
+      seen.add(d);
+      out.push(d);
+    }
+  }
+  return out;
+}
+
+function parseSystemPrompt(sp) {
+  if (sp === undefined || sp === null) return "";
+  if (typeof sp === "string") return sp;
+  if (typeof sp === "object" && !Array.isArray(sp)) {
+    if (typeof sp.append === "string") return sp.append;
+    if (sp.append === undefined) return "";
+  }
+  throw new RpcError(-32602, "Invalid systemPrompt");
 }
 
 function newSession(id, cwd) {
   return {
     id,
     cwd,
+    additionalDirectories: [],
     model: DEFAULT_MODEL,
     mode: DEFAULT_MODE,
     plan: false,
     mcp: DEFAULT_MCP,
+    web: DEFAULT_WEB,
     maxTurns: "default",
+    systemPrompt: "",
     t3Instructions: "",
+    runtimeInfo: "",
+    prLinking: "",
     t3Mcp: null,
+    title: null,
+    updatedAt: new Date().toISOString(),
     history: [],
     busy: false,
     cancelled: false,
@@ -180,8 +298,15 @@ function newSession(id, cwd) {
 }
 
 function getSession(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.trim() === "") {
+    throw new RpcError(-32602, "sessionId must be a non-empty string");
+  }
   const session = sessions.get(sessionId);
-  if (!session) throw new RpcError(-32602, `Unknown sessionId: ${sessionId}`);
+  if (!session) {
+    throw new RpcError(-32002, `Unknown sessionId: ${sessionId}`, {
+      sessionId,
+    });
+  }
   return session;
 }
 
@@ -192,17 +317,25 @@ function sessionFile(id) {
 // Saves what survives a restart. A failed save is logged and does not fail the turn.
 function persist(s) {
   try {
+    s.updatedAt = new Date().toISOString();
     mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
     const file = sessionFile(s.id);
     const data = {
       id: s.id,
       cwd: s.cwd,
+      additionalDirectories: s.additionalDirectories,
       model: s.model,
       mode: s.mode,
       plan: s.plan,
       mcp: s.mcp,
+      web: s.web,
       maxTurns: s.maxTurns,
+      systemPrompt: s.systemPrompt,
       t3Instructions: s.t3Instructions,
+      runtimeInfo: s.runtimeInfo,
+      prLinking: s.prLinking,
+      title: s.title,
+      updatedAt: s.updatedAt,
       history: s.history,
     };
     writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2), {
@@ -225,19 +358,426 @@ function readPersisted(id) {
   }
 }
 
+function hydrateSession(sessionId, cwd, saved, mcpServers, additionalDirs) {
+  const s = newSession(sessionId, cwd);
+  s.t3Mcp = extractT3Mcp(mcpServers);
+  if (additionalDirs !== undefined) {
+    s.additionalDirectories = additionalDirs;
+  } else if (Array.isArray(saved.additionalDirectories)) {
+    s.additionalDirectories = saved.additionalDirectories.filter(
+      (d) => typeof d === "string" && isAbsolute(d),
+    );
+  }
+  if (typeof saved.systemPrompt === "string") s.systemPrompt = saved.systemPrompt;
+  if (typeof saved.t3Instructions === "string") s.t3Instructions = saved.t3Instructions;
+  if (typeof saved.runtimeInfo === "string") s.runtimeInfo = saved.runtimeInfo;
+  if (typeof saved.prLinking === "string") s.prLinking = saved.prLinking;
+  if (isKnownModel(saved.model)) s.model = saved.model;
+  if (Object.hasOwn(MODES, saved.mode)) s.mode = saved.mode;
+  if (typeof saved.plan === "boolean") s.plan = saved.plan;
+  if (typeof saved.mcp === "boolean") s.mcp = saved.mcp;
+  if (typeof saved.web === "boolean") s.web = saved.web;
+  if (
+    typeof saved.maxTurns === "string" &&
+    MAX_TURNS_OPTIONS.some((o) => o.value === saved.maxTurns)
+  ) {
+    s.maxTurns = saved.maxTurns;
+  }
+  if (typeof saved.title === "string") s.title = saved.title;
+  if (typeof saved.updatedAt === "string") s.updatedAt = saved.updatedAt;
+  if (Array.isArray(saved.history)) {
+    s.history = saved.history
+      .filter(
+        (t) =>
+          (t?.role === "user" || t?.role === "assistant") &&
+          typeof t.text === "string",
+      )
+      .map((t) =>
+        t.role === "assistant"
+          ? { role: t.role, text: stripToolFences(t.text) }
+          : t,
+      );
+  }
+  return s;
+}
+
+function extFromMime(mime) {
+  switch (String(mime || "").toLowerCase()) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return "png";
+  }
+}
+
 function promptText(blocks) {
   if (!Array.isArray(blocks)) return "";
-  return blocks
-    .map((b) => {
-      if (b?.type === "text") return b.text ?? "";
-      if (b?.type === "resource" && typeof b.resource?.text === "string") {
-        return b.resource.text;
+  const parts = [];
+  const images = [];
+  for (const b of blocks) {
+    if (b?.type === "text") {
+      if (b.text) parts.push(b.text);
+    } else if (b?.type === "resource" && typeof b.resource?.text === "string") {
+      parts.push(b.resource.text);
+    } else if (b?.type === "resource_link") {
+      parts.push(`[resource: ${b.uri}]`);
+    } else if (b?.type === "image" && typeof b.data === "string") {
+      images.push(b);
+    }
+  }
+  let joined = parts.filter(Boolean).join("\n");
+  if (images.length > 0 && !joined.includes("[Attached image")) {
+    try {
+      mkdirSync(ATTACHMENTS_DIR, { recursive: true, mode: 0o700 });
+      const savedNotes = [];
+      for (const img of images) {
+        const file = join(
+          ATTACHMENTS_DIR,
+          `${randomUUID()}.${extFromMime(img.mimeType)}`,
+        );
+        writeFileSync(file, Buffer.from(img.data, "base64"), { mode: 0o600 });
+        savedNotes.push(
+          `[Attached image saved at: ${file} (${img.mimeType || "image/png"})]`,
+        );
       }
-      if (b?.type === "resource_link") return `[resource: ${b.uri}]`;
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
+      joined = joined ? `${joined}\n\n${savedNotes.join("\n")}` : savedNotes.join("\n");
+    } catch (err) {
+      log(`could not save image attachment: ${err.message}`);
+    }
+  }
+  return joined;
+}
+
+function parseFrontmatter(raw) {
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!m) return { meta: {}, body: raw };
+  const yaml = m[1];
+  const body = m[2];
+  const meta = {};
+  const lines = yaml.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!kv) continue;
+    const key = kv[1];
+    let val = kv[2].trim();
+    if (/^[>|][-+]?$/.test(val)) {
+      const collected = [];
+      while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]) || lines[i + 1].trim() === "")) {
+        i++;
+        const trimmed = lines[i].trim();
+        if (trimmed !== "") collected.push(trimmed);
+      }
+      meta[key] = collected.join(" ");
+    } else {
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      meta[key] = val;
+    }
+  }
+  return { meta, body };
+}
+
+function firstBodyLine(body) {
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.trim().replace(/^#+\s*/, "");
+    if (t) return t;
+  }
+  return "";
+}
+
+function walkMarkdownFiles(dir, prefix = "") {
+  const out = [];
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry.startsWith(".")) continue;
+    const full = join(dir, entry);
+    let st;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      const nextPrefix = prefix ? `${prefix}:${entry}` : entry;
+      out.push(...walkMarkdownFiles(full, nextPrefix));
+    } else if (st.isFile() && entry.endsWith(".md")) {
+      const base = entry.slice(0, -3);
+      out.push({ name: prefix ? `${prefix}:${base}` : base, path: full });
+    }
+  }
+  return out;
+}
+
+function discoverSkillsAndCommands(cwds) {
+  const roots = [...new Set(cwds.filter((d) => typeof d === "string" && isAbsolute(d)))];
+  const cacheKey = roots.join("\0");
+  const now = Date.now();
+  const cached = skillCache.get(cacheKey);
+  if (cached && now - cached.at < SKILL_CACHE_TTL_MS) return cached.data;
+
+  const home = homedir();
+  const skillRoots = [
+    ...roots.flatMap((d) => [
+      join(d, ".claude", "skills"),
+      join(d, ".agents", "skills"),
+      join(d, ".codex", "skills"),
+    ]),
+    join(home, ".claude", "skills"),
+    join(home, ".agents", "skills"),
+    join(home, ".codex", "skills"),
+  ];
+  const commandRoots = [
+    ...roots.flatMap((d) => [
+      join(d, ".claude", "commands"),
+      join(d, ".agents", "commands"),
+    ]),
+    join(home, ".claude", "commands"),
+    join(home, ".agents", "commands"),
+  ];
+
+  const skills = new Map();
+  const orderedSkills = [];
+  for (const root of skillRoots) {
+    let entries;
+    try {
+      entries = readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const entryDir = join(root, entry);
+      let st;
+      try {
+        st = statSync(entryDir);
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory()) continue;
+      const skillFile = join(entryDir, "SKILL.md");
+      if (!existsSync(skillFile)) continue;
+      let raw;
+      try {
+        raw = readFileSync(skillFile, "utf8");
+      } catch {
+        continue;
+      }
+      const { meta, body } = parseFrontmatter(raw);
+      const name = (meta.name || entry).trim();
+      if (!name || /\s/.test(name)) continue;
+      const key = name.toLowerCase();
+      if (skills.has(key)) continue;
+      const description = (meta.description || firstBodyLine(body) || `Run ${name} skill`).slice(0, 300);
+      const item = { name, description, path: skillFile, dir: entryDir, kind: "skill" };
+      skills.set(key, item);
+      orderedSkills.push(item);
+    }
+  }
+
+  const commands = new Map();
+  const orderedCommands = [];
+  for (const root of commandRoots) {
+    for (const file of walkMarkdownFiles(root)) {
+      if (!file.name || /\s/.test(file.name)) continue;
+      const key = file.name.toLowerCase();
+      if (commands.has(key)) continue;
+      let raw;
+      try {
+        raw = readFileSync(file.path, "utf8");
+      } catch {
+        continue;
+      }
+      const { meta, body } = parseFrontmatter(raw);
+      const description = (meta.description || firstBodyLine(body) || `Run /${file.name}`).slice(0, 300);
+      const item = {
+        name: file.name,
+        description,
+        path: file.path,
+        dir: dirname(file.path),
+        kind: "command",
+      };
+      commands.set(key, item);
+      orderedCommands.push(item);
+    }
+  }
+
+  const data = { skills, commands, orderedSkills, orderedCommands };
+  skillCache.set(cacheKey, { at: now, data });
+  return data;
+}
+
+const BUILTIN_COMMANDS = [
+  {
+    name: "compact",
+    description: "Summarize conversation history to free context space",
+    input: { hint: "optional focus instructions" },
+  },
+  { name: "clear", description: "Clear conversation history in this session" },
+  { name: "plan", description: "Turn plan mode on (read-only planning)" },
+  { name: "skills", description: "List all discovered skills and slash commands" },
+  { name: "mcp", description: "Show T3 Code MCP bridge and ntl MCP status" },
+  {
+    name: "web",
+    description: "Toggle ntl web search (on or off)",
+    input: { hint: "on | off" },
+  },
+  {
+    name: "model",
+    description: "Switch or list available models",
+    input: { hint: "model-id" },
+  },
+  {
+    name: "mode",
+    description: "Switch permission preset",
+    input: { hint: "read-only | edit | edit-and-shell | plan" },
+  },
+  {
+    name: "status",
+    description: "Display session settings, context usage, skills, and T3 MCP status",
+  },
+];
+
+function buildAvailableCommands(s) {
+  const { orderedCommands, orderedSkills } = discoverSkillsAndCommands([
+    s.cwd,
+    ...s.additionalDirectories,
+  ]);
+  const seen = new Set();
+  const out = [];
+  const pushUnique = (cmd) => {
+    if (!cmd?.name || /\s/.test(cmd.name)) return;
+    const key = cmd.name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(cmd);
+  };
+  for (const c of BUILTIN_COMMANDS) pushUnique(c);
+  for (const c of orderedCommands) {
+    pushUnique({
+      name: c.name,
+      description: c.description,
+      input: { hint: "optional arguments" },
+    });
+  }
+  for (const sk of orderedSkills) {
+    pushUnique({
+      name: sk.name,
+      description: sk.description,
+      input: { hint: "optional prompt or arguments" },
+    });
+    pushUnique({
+      name: `$${sk.name}`,
+      description: sk.description,
+    });
+  }
+  return out;
+}
+
+function clientSupportsCompactionUpdates(capabilities) {
+  const compaction = capabilities?.session?.compaction;
+  return typeof compaction === "object" && compaction !== null && !Array.isArray(compaction);
+}
+
+function estimateContextChars(s) {
+  return (
+    s.history.reduce((n, t) => n + t.text.length + 12, 0) +
+    s.systemPrompt.length +
+    s.t3Instructions.length +
+    s.runtimeInfo.length +
+    s.prLinking.length
+  );
+}
+
+function emitUsageUpdate(s) {
+  const used = Math.ceil(estimateContextChars(s) / 4);
+  const size = Math.ceil(HISTORY_BUDGET_CHARS / 4);
+  update(s.id, {
+    sessionUpdate: "usage_update",
+    used,
+    size,
+  });
+}
+
+function emitSessionReadyUpdates(s) {
+  setImmediate(() => {
+    if (!sessions.has(s.id)) return;
+    update(s.id, {
+      sessionUpdate: "available_commands_update",
+      availableCommands: buildAvailableCommands(s),
+    });
+    emitUsageUpdate(s);
+  });
+}
+
+function extractLastMatch(text, regex) {
+  const matches = text.match(regex);
+  return matches && matches.length > 0 ? matches[matches.length - 1] : "";
+}
+
+function stripT3Context(text) {
+  let out = text
+    .replace(T3_INSTRUCTIONS, "")
+    .replace(RUNTIME_INFO, "")
+    .replace(PR_LINKING, "")
+    .trim();
+  const wrapped = out.match(USER_REQUEST_WRAP);
+  if (wrapped) out = wrapped[1].trim();
+  return out;
+}
+
+function formatSkillBlock(item, args) {
+  let content = "";
+  try {
+    content = readFileSync(item.path, "utf8");
+  } catch (err) {
+    log(`could not read ${item.path}: ${err.message}`);
+    return "";
+  }
+  if (args) content = content.replace(/\$ARGUMENTS/g, args);
+  return [
+    `<invoked_skill name="${item.name}" kind="${item.kind}" path="${item.path}" dir="${item.dir}">`,
+    content.trim(),
+    `</invoked_skill>`,
+  ].join("\n");
+}
+
+function skillSiblingNote() {
+  return "If an invoked skill references another skill by name (e.g. obsidian-second-brain), read its SKILL.md from ~/.agents/skills/<name>/SKILL.md, ~/.claude/skills/<name>/SKILL.md, ~/.codex/skills/<name>/SKILL.md, or the project's .claude/skills/<name>/SKILL.md.";
+}
+
+function expandDollarSkills(text, s) {
+  const { skills } = discoverSkillsAndCommands([s.cwd, ...s.additionalDirectories]);
+  const blocks = [];
+  const seen = new Set();
+  const re = /(?:^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9._-]*)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const key = m[1].toLowerCase();
+    if (seen.has(key)) continue;
+    const item = skills.get(key);
+    if (!item) continue;
+    seen.add(key);
+    const block = formatSkillBlock(item, "");
+    if (block) blocks.push(block);
+    if (blocks.length >= 3) break;
+  }
+  if (blocks.length === 0) return text;
+  return `${blocks.join("\n\n")}\n\n${skillSiblingNote()}\n\n${text}`;
 }
 
 // `ntl -p` is one-shot, and --continue/--resume only work interactively,
@@ -317,6 +857,49 @@ function makeFenceFilter() {
   };
 }
 
+function extractLocation(text) {
+  const m = text.match(/(?:^|\s)(\/[^\s"'():]+)/);
+  if (!m) return undefined;
+  const path = m[1];
+  try {
+    if (existsSync(path)) return [{ path }];
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
+function buildFileDiffContent(cwd, file) {
+  const absPath = isAbsolute(file) ? file : resolve(cwd, file);
+  try {
+    if (!existsSync(absPath)) return null;
+    const st = statSync(absPath);
+    if (!st.isFile() || st.size > 200_000) return { absPath, diff: null };
+    const buf = readFileSync(absPath);
+    if (buf.includes(0)) return { absPath, diff: null };
+    const newText = buf.toString("utf8");
+    let oldText = null;
+    try {
+      const rel = relative(cwd, absPath);
+      if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
+        oldText = execFileSync("git", ["-C", cwd, "show", `HEAD:${rel}`], {
+          encoding: "utf8",
+          timeout: 1000,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+      }
+    } catch {
+      oldText = null;
+    }
+    return {
+      absPath,
+      diff: { type: "diff", path: absPath, oldText, newText },
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Turns one stderr line from ntl into an ACP update while the turn runs.
 function reportProgress(session, raw, actions) {
   const line = raw.trim();
@@ -325,12 +908,14 @@ function reportProgress(session, raw, actions) {
   if (m) {
     const text = m[2].trim();
     actions.push(text);
+    const locations = extractLocation(text);
     update(session.id, {
       sessionUpdate: "tool_call",
       toolCallId: randomUUID(),
       title: text,
       kind: toolKind(text),
       status: m[1] === "\u2717" ? "failed" : "completed",
+      ...(locations ? { locations } : {}),
     });
     return;
   }
@@ -425,7 +1010,7 @@ async function mcpRequest(t3Mcp, method, params, timeoutMs = 5000) {
       params: {
         protocolVersion: "2025-06-18",
         capabilities: {},
-        clientInfo: { name: "ntl-acp", version: "1.3.4" },
+        clientInfo: { name: "ntl-acp", version: "1.4.0" },
       },
     }),
     signal: AbortSignal.timeout(timeoutMs),
@@ -515,8 +1100,9 @@ function capabilityNote(preset, session) {
   return notes.join(" ");
 }
 
-async function runNtl(session, input, preset) {
-  const t3Mcp = session.t3Mcp ?? envT3Mcp();
+async function runNtl(session, input, preset, opts = {}) {
+  const skipT3Context = opts.skipT3Context === true;
+  const t3Mcp = !skipT3Context ? (session.t3Mcp ?? envT3Mcp()) : null;
   const t3Tools = preset.shell && t3Mcp ? await fetchT3McpTools(t3Mcp) : null;
   const t3McpBlock =
     preset.shell && t3Mcp ? `\n\n${formatT3McpNote(t3Tools)}` : "";
@@ -533,6 +1119,7 @@ async function runNtl(session, input, preset) {
     if (preset.writes) args.push("--allow-writes");
     if (preset.shell) args.push("--allow-shell");
     if (session.mcp) args.push("--allow-mcp");
+    if (session.web) args.push("--web");
     if (session.maxTurns !== "default") args.push("--max-turns", session.maxTurns);
 
     const childEnv = { ...process.env, NO_COLOR: "1" };
@@ -630,14 +1217,29 @@ async function runNtl(session, input, preset) {
       });
     });
 
-    const savedInstructions =
-      session.t3Instructions && !/<t3_code_instructions>/.test(input)
-        ? `${session.t3Instructions}\n\n`
+    const savedContext = [];
+    if (!skipT3Context) {
+      if (session.systemPrompt) savedContext.push(session.systemPrompt);
+      if (session.t3Instructions && !/<t3_code_instructions>/.test(input)) {
+        savedContext.push(session.t3Instructions);
+      }
+      if (session.runtimeInfo && !/<runtime_info>/.test(input)) {
+        savedContext.push(session.runtimeInfo);
+      }
+      if (session.prLinking && !/<pull_request_linking>/.test(input)) {
+        savedContext.push(session.prLinking);
+      }
+    }
+    const extraDirsNote =
+      session.additionalDirectories.length > 0
+        ? `\nAdditional workspace directories: ${session.additionalDirectories.join(", ")}`
         : "";
+    const contextPrefix =
+      savedContext.length > 0 ? `${savedContext.join("\n\n")}\n\n` : "";
     child.stdin.end(
-      `Project directory for this task: ${session.cwd}\n` +
+      `Project directory for this task: ${session.cwd}${extraDirsNote}\n` +
         `Environment: ${capabilityNote(preset, session)}${t3McpBlock}\n\n` +
-        `${savedInstructions}${input}`,
+        `${contextPrefix}${input}`,
     );
   });
 }
@@ -775,28 +1377,378 @@ async function requestTurnPermission(s, preset) {
   return outcome;
 }
 
+async function handleBuiltinCommand(s, cmdName, cmdArgs) {
+  const sendText = (msg) =>
+    update(s.id, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: msg },
+    });
+
+  switch (cmdName) {
+    case "clear": {
+      s.history = [];
+      persist(s);
+      emitUsageUpdate(s);
+      sendText("Session history cleared.");
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "status": {
+      const t3Mcp = s.t3Mcp ?? envT3Mcp();
+      const discovered = discoverSkillsAndCommands([
+        s.cwd,
+        ...s.additionalDirectories,
+      ]);
+      const chars = estimateContextChars(s);
+      const summary = [
+        `**ntl-acp status** (v1.4.0)`,
+        `- **Session:** \`${s.id}\``,
+        `- **CWD:** \`${s.cwd}\``,
+        `- **Model:** \`${s.model}\``,
+        `- **Mode:** \`${s.mode}\` (plan: ${s.plan ? "on" : "off"})`,
+        `- **Web search:** ${s.web ? "on" : "off"} | **Native MCP:** ${s.mcp ? "on" : "off"} | **Max turns:** ${s.maxTurns}`,
+        `- **Context:** ${s.history.length} turns (~${Math.ceil(chars / 4)} / ${Math.ceil(HISTORY_BUDGET_CHARS / 4)} est. tokens)`,
+        `- **T3 MCP bridge:** ${t3Mcp ? "connected" : "not configured"}`,
+        `- **Discovered:** ${discovered.orderedSkills.length} skills, ${discovered.orderedCommands.length} commands`,
+      ].join("\n");
+      sendText(summary);
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "plan": {
+      s.mode = "read-only";
+      s.plan = true;
+      persist(s);
+      update(s.id, { sessionUpdate: "current_mode_update", currentModeId: s.mode });
+      update(s.id, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
+      sendText("Switched to **plan** mode (`read-only`).");
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "skills": {
+      const { orderedSkills, orderedCommands } = discoverSkillsAndCommands([
+        s.cwd,
+        ...s.additionalDirectories,
+      ]);
+      const lines = [
+        `**Discovered Skills (${orderedSkills.length}) & Commands (${orderedCommands.length})**`,
+        "Invoke with `/name [args]` or `$skill-name`.",
+      ];
+      if (orderedCommands.length > 0) {
+        lines.push("", "**Commands:**");
+        for (const c of orderedCommands.slice(0, 40)) {
+          lines.push(`- \`/${c.name}\` — ${c.description}`);
+        }
+      }
+      if (orderedSkills.length > 0) {
+        lines.push("", "**Skills:**");
+        for (const sk of orderedSkills.slice(0, 60)) {
+          lines.push(`- \`/${sk.name}\` / \`$${sk.name}\` — ${sk.description}`);
+        }
+        if (orderedSkills.length > 60) {
+          lines.push(`- ...and ${orderedSkills.length - 60} more`);
+        }
+      }
+      sendText(lines.join("\n"));
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "mcp": {
+      const t3Mcp = s.t3Mcp ?? envT3Mcp();
+      const tools = t3Mcp ? await fetchT3McpTools(t3Mcp) : null;
+      const lines = [
+        `**MCP Status**`,
+        `- **T3 Code MCP bridge:** ${t3Mcp ? `connected (${tools ? `${tools.length} tools` : "endpoint reachable"})` : "not present"}`,
+        `- **ntl native \`--allow-mcp\`:** ${s.mcp ? "on" : "off"} (Max plan only in ntl CLI)`,
+      ];
+      sendText(lines.join("\n"));
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "web": {
+      const arg = cmdArgs.trim().toLowerCase();
+      if (arg && arg !== "on" && arg !== "off") {
+        sendText(`Usage: \`/web [on | off]\` (currently ${s.web ? "on" : "off"}).`);
+        return { handled: true, stopReason: "end_turn" };
+      }
+      s.web = arg ? arg === "on" : !s.web;
+      persist(s);
+      update(s.id, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
+      sendText(`Web search is now **${s.web ? "on" : "off"}**.`);
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "model": {
+      const arg = cmdArgs.trim();
+      if (!arg) {
+        const list = getModels()
+          .map((m) => `- \`${m.id}\` (${m.name})${m.id === s.model ? " **(active)**" : ""}`)
+          .join("\n");
+        sendText(`Current model: \`${s.model}\`\n\nAvailable models:\n${list}`);
+        return { handled: true, stopReason: "end_turn" };
+      }
+      if (!isKnownModel(arg)) {
+        sendText(`Unknown model: \`${arg}\`. Run \`/model\` to list available models.`);
+        return { handled: true, stopReason: "end_turn" };
+      }
+      s.model = arg;
+      persist(s);
+      update(s.id, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
+      sendText(`Switched model to \`${s.model}\`.`);
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "mode": {
+      const arg = cmdArgs.trim();
+      if (!arg) {
+        sendText(
+          `Current mode: \`${s.mode}\` (plan: ${s.plan ? "on" : "off"}). Options: \`read-only\`, \`edit\`, \`edit-and-shell\`, \`plan\`.`,
+        );
+        return { handled: true, stopReason: "end_turn" };
+      }
+      const mapped = resolveModeId(arg);
+      if (!mapped) {
+        sendText(`Unknown mode: \`${arg}\`. Options: \`read-only\`, \`edit\`, \`edit-and-shell\`, \`plan\`.`);
+        return { handled: true, stopReason: "end_turn" };
+      }
+      s.mode = mapped;
+      s.plan = arg === "plan";
+      persist(s);
+      update(s.id, { sessionUpdate: "current_mode_update", currentModeId: s.mode });
+      update(s.id, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
+      sendText(`Switched permissions to \`${s.mode}\`${s.plan ? " (plan)" : ""}.`);
+      return { handled: true, stopReason: "end_turn" };
+    }
+
+    case "compact": {
+      const compactionId = randomUUID();
+      const useCompactionUpdate = clientSupportsCompactionUpdates(clientCapabilities);
+      const emitStart = () => {
+        if (useCompactionUpdate) {
+          update(s.id, {
+            sessionUpdate: "compaction_update",
+            compactionId,
+            status: "in_progress",
+          });
+        } else {
+          update(s.id, {
+            sessionUpdate: "tool_call",
+            toolCallId: compactionId,
+            title: "Compact conversation",
+            kind: "other",
+            status: "in_progress",
+          });
+        }
+      };
+      const emitEnd = (status, summaryText, errMsg) => {
+        if (useCompactionUpdate) {
+          update(s.id, {
+            sessionUpdate: "compaction_update",
+            compactionId,
+            status,
+            ...(status === "completed" && summaryText
+              ? { summary: [{ type: "text", text: summaryText }] }
+              : {}),
+            ...(status === "failed" && errMsg ? { error: errMsg } : {}),
+          });
+        } else {
+          update(s.id, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: compactionId,
+            status: status === "completed" ? "completed" : status === "cancelled" ? "in_progress" : "failed",
+            ...(summaryText
+              ? { content: [{ type: "content", content: { type: "text", text: summaryText } }] }
+              : {}),
+          });
+        }
+      };
+
+      emitStart();
+      if (s.history.length === 0) {
+        emitEnd("completed", "History is already empty.");
+        emitUsageUpdate(s);
+        sendText("History is already empty; nothing to compact.");
+        return { handled: true, stopReason: "end_turn" };
+      }
+      const focusNote = cmdArgs.trim() ? `\nFocus instructions: ${cmdArgs.trim()}\n` : "";
+      const transcript = s.history
+        .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`)
+        .join("\n\n")
+        .slice(-HISTORY_BUDGET_CHARS);
+      const compactPrompt = [
+        "Summarize the conversation below into a concise, high-signal continuation summary.",
+        "Preserve user goals, architectural decisions, exact file paths, symbol names, test results, and pending next steps.",
+        focusNote,
+        "Conversation:",
+        transcript,
+      ].join("\n\n");
+      try {
+        const res = await runNtl(s, compactPrompt, MODES["read-only"], {
+          skipT3Context: true,
+        });
+        if (res.cancelled) {
+          emitEnd("cancelled");
+          return { handled: true, stopReason: "cancelled" };
+        }
+        const summary = stripToolFences(res.text) || "Compacted prior conversation.";
+        s.history = [
+          {
+            role: "assistant",
+            text: `[Compacted conversation summary]\n${summary}`,
+          },
+        ];
+        persist(s);
+        emitEnd("completed", summary);
+        emitUsageUpdate(s);
+        sendText(`Compacted conversation history:\n\n${summary}`);
+        return { handled: true, stopReason: "end_turn" };
+      } catch (err) {
+        emitEnd("failed", undefined, err.message);
+        throw err;
+      }
+    }
+
+    default:
+      return { handled: false };
+  }
+}
+
+async function probeStdioMcpServer(server) {
+  if (!server || typeof server.command !== "string" || server.name === "t3-code") {
+    return;
+  }
+  const extraEnv = {};
+  if (Array.isArray(server.env)) {
+    for (const e of server.env) {
+      if (typeof e?.name === "string" && typeof e?.value === "string") {
+        extraEnv[e.name] = e.value;
+      }
+    }
+  } else if (server.env && typeof server.env === "object") {
+    for (const [k, v] of Object.entries(server.env)) {
+      if (typeof v === "string") extraEnv[k] = v;
+    }
+  }
+  const args = Array.isArray(server.args) ? server.args.map(String) : [];
+  await new Promise((resolveDone) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolveDone();
+    };
+    let child;
+    try {
+      child = spawn(server.command, args, {
+        env: { ...process.env, ...extraEnv },
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+    } catch {
+      finish();
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      finish();
+    }, 1500);
+    let buf = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      buf += chunk;
+      if (buf.includes("\n")) {
+        clearTimeout(timer);
+        try {
+          child.stdin.write(
+            `${JSON.stringify({
+              jsonrpc: "2.0",
+              method: "notifications/initialized",
+              params: {},
+            })}\n`,
+          );
+          child.stdin.end();
+        } catch {
+          // ignore
+        }
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // ignore
+        }
+        finish();
+      }
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      finish();
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      finish();
+    });
+    try {
+      child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "ntl-acp", version: "1.4.0" },
+          },
+        })}\n`,
+      );
+    } catch {
+      clearTimeout(timer);
+      finish();
+    }
+  });
+}
+
+async function connectStdioMcpServers(mcpServers) {
+  if (!Array.isArray(mcpServers) || mcpServers.length === 0) return;
+  await Promise.all(mcpServers.map((srv) => probeStdioMcpServer(srv)));
+}
+
 async function handle(method, params) {
+  if (!initialized && method !== "initialize") {
+    throw new RpcError(-32600, "Agent not initialized");
+  }
+
   switch (method) {
     case "initialize": {
+      initialized = true;
       clientCapabilities = params?.clientCapabilities ?? {};
       log(
         `client: ${params?.clientInfo?.name ?? "unknown"} ${params?.clientInfo?.version ?? ""} ` +
           `(fs=${clientCapabilities.fs?.readTextFile ? "r" : ""}${clientCapabilities.fs?.writeTextFile ? "w" : ""}, terminal=${clientCapabilities.terminal ? "yes" : "no"})`,
       );
       return {
-        protocolVersion: params?.protocolVersion ?? 1,
+        protocolVersion: 1,
         agentCapabilities: {
           loadSession: true,
           promptCapabilities: {
-            image: false,
+            image: true,
             audio: false,
             embeddedContext: true,
+          },
+          sessionCapabilities: {
+            list: {},
+            fork: {},
+            resume: {},
+            close: {},
+            delete: {},
+            additionalDirectories: {},
           },
         },
         agentInfo: {
           name: "ntl-acp",
           title: "NoTokenLimit (ntl)",
-          version: "1.3.4",
+          version: "1.4.0",
         },
         authMethods: [],
       };
@@ -810,10 +1762,18 @@ async function handle(method, params) {
       if (typeof params?.cwd !== "string" || !isAbsolute(params.cwd)) {
         throw new RpcError(-32602, "session/new requires an absolute cwd");
       }
+      const additionalDirectories = parseAdditionalDirectories(
+        params?.additionalDirectories,
+      );
+      const systemPrompt = parseSystemPrompt(params?.systemPrompt);
       const s = newSession(randomUUID(), params.cwd);
+      s.additionalDirectories = additionalDirectories;
+      s.systemPrompt = systemPrompt;
       s.t3Mcp = extractT3Mcp(params?.mcpServers);
+      await connectStdioMcpServers(params?.mcpServers);
       sessions.set(s.id, s);
       persist(s);
+      emitSessionReadyUpdates(s);
       return {
         sessionId: s.id,
         configOptions: configOptions(s),
@@ -823,42 +1783,45 @@ async function handle(method, params) {
 
     case "session/load": {
       const sessionId = params?.sessionId;
+      if (typeof sessionId !== "string" || sessionId.trim() === "") {
+        throw new RpcError(-32602, "session/load requires sessionId");
+      }
+      if (
+        params?.cwd !== undefined &&
+        (typeof params.cwd !== "string" || !isAbsolute(params.cwd))
+      ) {
+        throw new RpcError(-32602, "session/load cwd must be an absolute path");
+      }
+      const additionalDirs =
+        params?.additionalDirectories !== undefined
+          ? parseAdditionalDirectories(params.additionalDirectories)
+          : undefined;
       if (sessions.has(sessionId)) {
         const s = sessions.get(sessionId);
         s.t3Mcp = extractT3Mcp(params?.mcpServers) ?? s.t3Mcp;
-        return { configOptions: configOptions(s), modes: modeState(s) };
+        if (additionalDirs !== undefined) s.additionalDirectories = additionalDirs;
+        await connectStdioMcpServers(params?.mcpServers);
+        emitSessionReadyUpdates(s);
+        return {
+          configOptions: configOptions(s),
+          modes: modeState(s),
+        };
       }
       const saved = readPersisted(sessionId);
-      if (!saved) throw new RpcError(-32002, `Unknown session: ${sessionId}`);
-      const cwd =
-        typeof params.cwd === "string" && isAbsolute(params.cwd)
-          ? params.cwd
-          : saved.cwd;
-      const s = newSession(sessionId, cwd);
-      s.t3Mcp = extractT3Mcp(params?.mcpServers);
-      if (typeof saved.t3Instructions === "string") {
-        s.t3Instructions = saved.t3Instructions;
+      if (!saved) {
+        throw new RpcError(-32002, `Unknown session: ${sessionId}`, {
+          sessionId,
+        });
       }
-      if (MODELS.includes(saved.model)) s.model = saved.model;
-      if (Object.hasOwn(MODES, saved.mode)) s.mode = saved.mode;
-      if (typeof saved.plan === "boolean") s.plan = saved.plan;
-      if (typeof saved.mcp === "boolean") s.mcp = saved.mcp;
-      if (typeof saved.maxTurns === "string" && MAX_TURNS_OPTIONS.some((o) => o.value === saved.maxTurns)) {
-        s.maxTurns = saved.maxTurns;
-      }
-      if (Array.isArray(saved.history)) {
-        s.history = saved.history
-          .filter(
-            (t) =>
-              (t?.role === "user" || t?.role === "assistant") &&
-              typeof t.text === "string",
-          )
-          .map((t) =>
-            t.role === "assistant"
-              ? { role: t.role, text: stripToolFences(t.text) }
-              : t,
-          );
-      }
+      const cwd = typeof params?.cwd === "string" ? params.cwd : saved.cwd;
+      const s = hydrateSession(
+        sessionId,
+        cwd,
+        saved,
+        params?.mcpServers,
+        additionalDirs,
+      );
+      await connectStdioMcpServers(params?.mcpServers);
       sessions.set(s.id, s);
       for (const turn of s.history) {
         update(s.id, {
@@ -867,23 +1830,223 @@ async function handle(method, params) {
           content: { type: "text", text: turn.text },
         });
       }
-      return { configOptions: configOptions(s), modes: modeState(s) };
+      emitSessionReadyUpdates(s);
+      return {
+        configOptions: configOptions(s),
+        modes: modeState(s),
+      };
+    }
+
+    case "session/resume": {
+      const sessionId = params?.sessionId;
+      if (typeof sessionId !== "string" || sessionId.trim() === "") {
+        throw new RpcError(-32602, "session/resume requires sessionId");
+      }
+      if (
+        params?.cwd !== undefined &&
+        (typeof params.cwd !== "string" || !isAbsolute(params.cwd))
+      ) {
+        throw new RpcError(-32602, "session/resume cwd must be an absolute path");
+      }
+      const additionalDirs =
+        params?.additionalDirectories !== undefined
+          ? parseAdditionalDirectories(params.additionalDirectories)
+          : undefined;
+      if (sessions.has(sessionId)) {
+        const s = sessions.get(sessionId);
+        s.t3Mcp = extractT3Mcp(params?.mcpServers) ?? s.t3Mcp;
+        if (additionalDirs !== undefined) s.additionalDirectories = additionalDirs;
+        await connectStdioMcpServers(params?.mcpServers);
+        emitSessionReadyUpdates(s);
+        return {
+          configOptions: configOptions(s),
+          modes: modeState(s),
+        };
+      }
+      const saved = readPersisted(sessionId);
+      if (!saved) {
+        throw new RpcError(-32002, `Unknown session: ${sessionId}`, {
+          sessionId,
+        });
+      }
+      const cwd = typeof params?.cwd === "string" ? params.cwd : saved.cwd;
+      const s = hydrateSession(
+        sessionId,
+        cwd,
+        saved,
+        params?.mcpServers,
+        additionalDirs,
+      );
+      await connectStdioMcpServers(params?.mcpServers);
+      sessions.set(s.id, s);
+      emitSessionReadyUpdates(s);
+      return {
+        configOptions: configOptions(s),
+        modes: modeState(s),
+      };
+    }
+
+    case "session/fork": {
+      if (
+        (params?.cursorId !== undefined && params?.cursorId !== null) ||
+        (params?.cursor !== undefined && params?.cursor !== null)
+      ) {
+        throw new RpcError(-32602, "Unknown session cursor");
+      }
+      const sessionId = params?.sessionId;
+      if (typeof sessionId !== "string" || sessionId.trim() === "") {
+        throw new RpcError(-32602, "session/fork requires sessionId");
+      }
+      if (
+        params?.cwd !== undefined &&
+        (typeof params.cwd !== "string" || !isAbsolute(params.cwd))
+      ) {
+        throw new RpcError(-32602, "session/fork cwd must be an absolute path");
+      }
+      const additionalDirs =
+        params?.additionalDirectories !== undefined
+          ? parseAdditionalDirectories(params.additionalDirectories)
+          : undefined;
+      let src = sessions.get(sessionId);
+      if (!src) {
+        const saved = readPersisted(sessionId);
+        if (!saved) {
+          throw new RpcError(-32002, `Unknown session: ${sessionId}`, {
+            sessionId,
+          });
+        }
+        src = hydrateSession(sessionId, saved.cwd, saved, undefined, undefined);
+      }
+      const forked = newSession(
+        randomUUID(),
+        typeof params?.cwd === "string" ? params.cwd : src.cwd,
+      );
+      forked.additionalDirectories = additionalDirs ?? [...src.additionalDirectories];
+      forked.model = src.model;
+      forked.mode = src.mode;
+      forked.plan = src.plan;
+      forked.mcp = src.mcp;
+      forked.web = src.web;
+      forked.maxTurns = src.maxTurns;
+      forked.systemPrompt = src.systemPrompt;
+      forked.t3Instructions = src.t3Instructions;
+      forked.runtimeInfo = src.runtimeInfo;
+      forked.prLinking = src.prLinking;
+      forked.title = src.title;
+      forked.t3Mcp = extractT3Mcp(params?.mcpServers) ?? src.t3Mcp;
+      forked.history = src.history.map((t) => ({ ...t }));
+      await connectStdioMcpServers(params?.mcpServers);
+      sessions.set(forked.id, forked);
+      persist(forked);
+      emitSessionReadyUpdates(forked);
+      return {
+        sessionId: forked.id,
+        configOptions: configOptions(forked),
+        modes: modeState(forked),
+      };
+    }
+
+    case "session/list": {
+      if (
+        (params?.cursor !== undefined && params?.cursor !== null) ||
+        (params?.cursorId !== undefined && params?.cursorId !== null)
+      ) {
+        throw new RpcError(-32602, "Unknown cursor");
+      }
+      if (
+        params?.cwd !== undefined &&
+        (typeof params.cwd !== "string" || !isAbsolute(params.cwd))
+      ) {
+        throw new RpcError(-32602, "session/list cwd must be an absolute path");
+      }
+      const list = [];
+      let files = [];
+      try {
+        files = readdirSync(STATE_DIR);
+      } catch {
+        files = [];
+      }
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        const id = file.slice(0, -5);
+        if (!SESSION_ID.test(id)) continue;
+        const full = join(STATE_DIR, file);
+        try {
+          const data = JSON.parse(readFileSync(full, "utf8"));
+          if (typeof data?.cwd !== "string" || !isAbsolute(data.cwd)) continue;
+          if (params?.cwd && data.cwd !== params.cwd) continue;
+          let updatedAt = typeof data.updatedAt === "string" ? data.updatedAt : null;
+          if (!updatedAt) {
+            updatedAt = new Date(statSync(full).mtimeMs).toISOString();
+          }
+          const info = {
+            sessionId: id,
+            cwd: data.cwd,
+            title: typeof data.title === "string" ? data.title : null,
+            updatedAt,
+          };
+          if (Array.isArray(data.additionalDirectories) && data.additionalDirectories.length > 0) {
+            info.additionalDirectories = data.additionalDirectories.filter(
+              (d) => typeof d === "string" && isAbsolute(d),
+            );
+          }
+          list.push(info);
+        } catch {
+          // skip unreadable or partial files
+        }
+      }
+      list.sort((a, b) =>
+        String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")),
+      );
+      return { sessions: list };
+    }
+
+    case "session/delete": {
+      const sessionId = params?.sessionId;
+      if (typeof sessionId !== "string" || sessionId.trim() === "") {
+        throw new RpcError(-32602, "session/delete requires sessionId");
+      }
+      cancel(sessionId);
+      sessions.delete(sessionId);
+      rmSync(sessionFile(sessionId), { force: true });
+      return {};
     }
 
     case "session/set_mode": {
       const s = getSession(params?.sessionId);
       const mapped = resolveModeId(params?.modeId);
       if (!mapped) {
-        log(`ignoring unknown modeId: ${params?.modeId}`);
-        return {};
+        throw new RpcError(-32602, `Unknown modeId: ${params?.modeId}`);
       }
-      if (mapped !== s.mode) {
+      const nextPlan = params?.modeId === "plan";
+      if (mapped !== s.mode || s.plan !== nextPlan) {
         s.mode = mapped;
-        s.plan = params?.modeId === "plan";
+        s.plan = nextPlan;
         persist(s);
         update(s.id, {
           sessionUpdate: "current_mode_update",
           currentModeId: s.mode,
+        });
+        update(s.id, {
+          sessionUpdate: "config_option_update",
+          configOptions: configOptions(s),
+        });
+      }
+      return {};
+    }
+
+    case "session/set_model": {
+      const s = getSession(params?.sessionId);
+      const modelId = params?.modelId;
+      if (!isKnownModel(modelId)) {
+        throw new RpcError(-32602, `Unknown modelId: ${modelId}`);
+      }
+      if (s.model !== modelId) {
+        s.model = modelId;
+        persist(s);
+        update(s.id, {
+          sessionUpdate: "config_option_update",
+          configOptions: configOptions(s),
         });
       }
       return {};
@@ -894,7 +2057,7 @@ async function handle(method, params) {
       const value = params?.value;
       switch (params?.configId) {
         case "model":
-          if (!MODELS.includes(value)) {
+          if (!isKnownModel(value)) {
             throw new RpcError(-32602, `Unknown model: ${value}`);
           }
           s.model = value;
@@ -915,6 +2078,12 @@ async function handle(method, params) {
           }
           break;
         }
+        case "web":
+          if (value !== "on" && value !== "off") {
+            throw new RpcError(-32602, `Unknown web setting: ${value}`);
+          }
+          s.web = value === "on";
+          break;
         case "mcp":
           if (value !== "on" && value !== "off") {
             throw new RpcError(-32602, `Unknown MCP setting: ${value}`);
@@ -934,25 +2103,76 @@ async function handle(method, params) {
           );
       }
       persist(s);
-      return { configOptions: configOptions(s) };
+      const updated = configOptions(s);
+      update(s.id, {
+        sessionUpdate: "config_option_update",
+        configOptions: updated,
+      });
+      return { configOptions: updated };
     }
 
     case "session/prompt": {
       const s = getSession(params?.sessionId);
       if (s.busy) {
-        throw new RpcError(-32000, "A prompt is already running in this session");
+        throw new RpcError(
+          -32000,
+          "Agent is already processing a prompt in this session",
+        );
+      }
+      if (!Array.isArray(params?.prompt)) {
+        throw new RpcError(-32602, "session/prompt requires a prompt array");
       }
       const text = promptText(params.prompt);
       if (text.trim() === "") throw new RpcError(-32602, "Prompt is empty");
 
-      const instrMatches = text.match(T3_INSTRUCTIONS);
-      if (instrMatches && instrMatches.length > 0) {
-        s.t3Instructions = instrMatches[instrMatches.length - 1];
-      }
+      const nextInstr = extractLastMatch(text, T3_INSTRUCTIONS);
+      if (nextInstr) s.t3Instructions = nextInstr;
+      const nextRuntime = extractLastMatch(text, RUNTIME_INFO);
+      if (nextRuntime) s.runtimeInfo = nextRuntime;
+      const nextPr = extractLastMatch(text, PR_LINKING);
+      if (nextPr) s.prLinking = nextPr;
+
+      const cleanUserText = stripT3Context(text);
 
       s.busy = true;
       s.cancelled = false;
       try {
+        const slashMatch = cleanUserText
+          .trim()
+          .match(/^\/([a-zA-Z0-9][a-zA-Z0-9._:-]*)(?:\s+([\s\S]*))?$/);
+        let promptForNtl = text;
+        let storedUserText = cleanUserText || "(empty message)";
+
+        if (slashMatch) {
+          const cmdName = slashMatch[1].toLowerCase();
+          const cmdArgs = (slashMatch[2] ?? "").trim();
+          const builtin = await handleBuiltinCommand(s, cmdName, cmdArgs);
+          if (builtin.handled) {
+            return { stopReason: builtin.stopReason };
+          }
+          const discovered = discoverSkillsAndCommands([
+            s.cwd,
+            ...s.additionalDirectories,
+          ]);
+          const item =
+            discovered.commands.get(cmdName) ?? discovered.skills.get(cmdName);
+          if (item) {
+            const block = formatSkillBlock(item, cmdArgs);
+            if (block) {
+              const userLine = cmdArgs
+                ? `User request: ${cmdArgs}`
+                : `Execute this ${item.kind} for the current workspace and context.`;
+              promptForNtl = `${block}\n\n${skillSiblingNote()}\n\n${userLine}`;
+              storedUserText = cleanUserText.trim();
+            }
+          }
+        } else {
+          const expanded = expandDollarSkills(text, s);
+          if (expanded !== text) {
+            promptForNtl = expanded;
+          }
+        }
+
         const preset = MODES[s.mode];
         let effective = preset;
         if (!preset.writes || !preset.shell) {
@@ -968,46 +2188,67 @@ async function handle(method, params) {
               sessionUpdate: "current_mode_update",
               currentModeId: s.mode,
             });
+            update(s.id, {
+              sessionUpdate: "config_option_update",
+              configOptions: configOptions(s),
+            });
           } else {
             log(`permission decision for turn: ${decision}`);
           }
         }
-        const result = await runNtl(s, buildInput(s, text), effective);
+        const result = await runNtl(s, buildInput(s, promptForNtl), effective);
         if (result.cancelled) return { stopReason: "cancelled" };
 
         const reply = stripToolFences(result.text);
-        const stored = text.replace(T3_INSTRUCTIONS, "").trim() || "(empty message)";
         const actionNote =
           result.actions.length > 0
             ? `\n\n[Actions this turn: ${result.actions.join("; ")}]`
             : "";
         s.history.push(
-          { role: "user", text: stored },
+          { role: "user", text: storedUserText },
           { role: "assistant", text: `${reply}${actionNote}` },
         );
+        if (!s.title && storedUserText && storedUserText !== "(empty message)") {
+          const firstLine = storedUserText.replace(/\s+/g, " ").trim();
+          s.title = firstLine.slice(0, 80);
+        }
         persist(s);
+        if (s.title) {
+          update(s.id, {
+            sessionUpdate: "session_info_update",
+            title: s.title,
+            updatedAt: s.updatedAt,
+          });
+        }
         if (reply) {
           update(s.id, {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: reply },
           });
         }
-        const unreported = result.files.filter(
-          (file) => !result.actions.some((action) => action.includes(file)),
-        );
-        for (const file of unreported) {
+        for (const file of result.files) {
+          const alreadyMentioned = result.actions.some((action) =>
+            action.includes(file),
+          );
+          const diffInfo = buildFileDiffContent(s.cwd, file);
+          if (alreadyMentioned && !diffInfo?.diff) continue;
           const toolCallId = randomUUID();
+          const absPath = diffInfo?.absPath ?? (isAbsolute(file) ? file : resolve(s.cwd, file));
+          const locations = existsSync(absPath) ? [{ path: absPath }] : undefined;
           update(s.id, {
             sessionUpdate: "tool_call",
             toolCallId,
             title: `Edited ${file}`,
             kind: "edit",
             status: "in_progress",
+            ...(locations ? { locations } : {}),
           });
           update(s.id, {
             sessionUpdate: "tool_call_update",
             toolCallId,
             status: "completed",
+            ...(locations ? { locations } : {}),
+            ...(diffInfo?.diff ? { content: [diffInfo.diff] } : {}),
           });
         }
         if (result.files.length > 0) {
@@ -1019,6 +2260,7 @@ async function handle(method, params) {
             },
           });
         }
+        emitUsageUpdate(s);
         return { stopReason: "end_turn" };
       } finally {
         s.busy = false;
@@ -1027,6 +2269,9 @@ async function handle(method, params) {
 
     case "session/close": {
       const sessionId = params?.sessionId;
+      if (typeof sessionId !== "string" || sessionId.trim() === "") {
+        throw new RpcError(-32602, "session/close requires sessionId");
+      }
       cancel(sessionId);
       sessions.delete(sessionId);
       return {};
@@ -1064,6 +2309,15 @@ function main() {
       return;
     }
 
+    if (typeof msg !== "object" || msg === null || Array.isArray(msg)) {
+      write({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid Request" },
+      });
+      return;
+    }
+
     // Responses to our own client requests (e.g. session/request_permission)
     // carry no method; anything else without one is invalid and ignored.
     if (typeof msg.method !== "string") {
@@ -1079,11 +2333,31 @@ function main() {
     }
 
     if (msg.id === undefined) {
-      if (msg.method === "session/cancel") cancel(msg.params?.sessionId);
+      if (msg.method === "session/cancel") {
+        cancel(msg.params?.sessionId);
+      } else if (msg.method === "$/cancel_request") {
+        const sid = inFlightPrompts.get(msg.params?.id);
+        if (sid) cancel(sid);
+      }
       return;
     }
 
-    handle(msg.method, msg.params ?? {})
+    if (
+      msg.params !== undefined &&
+      (typeof msg.params !== "object" ||
+        msg.params === null ||
+        Array.isArray(msg.params))
+    ) {
+      sendError(msg.id, new RpcError(-32602, "params must be an object"));
+      return;
+    }
+
+    const params = msg.params ?? {};
+    if (msg.method === "session/prompt" && typeof params.sessionId === "string") {
+      inFlightPrompts.set(msg.id, params.sessionId);
+    }
+
+    handle(msg.method, params)
       .then((result) => sendResult(msg.id, result))
       .catch((err) => {
         if (!(err instanceof RpcError)) log(`internal error: ${err.stack}`);
@@ -1091,6 +2365,9 @@ function main() {
           msg.id,
           err instanceof RpcError ? err : new RpcError(-32603, err.message),
         );
+      })
+      .finally(() => {
+        if (msg.method === "session/prompt") inFlightPrompts.delete(msg.id);
       });
   });
 
