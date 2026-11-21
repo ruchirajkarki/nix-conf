@@ -292,6 +292,26 @@ function toolKind(text) {
   return "other";
 }
 
+// ntl streams the model's raw text to stderr as progress. The model
+// sometimes echoes tool-call fences there; passing them through as thought
+// chunks makes the client execute them a second time, so suppress whole
+// ```tool: blocks exactly like stripToolFences does for final text.
+function makeFenceFilter() {
+  let open = false;
+  return (line) => {
+    const t = line.trim();
+    if (open) {
+      if (/^```\s*$/.test(t)) open = false;
+      return false;
+    }
+    if (/^```tool:/.test(t)) {
+      open = true;
+      return false;
+    }
+    return true;
+  };
+}
+
 // Turns one stderr line from ntl into an ACP update while the turn runs.
 function reportProgress(session, raw, actions) {
   const line = raw.trim();
@@ -387,6 +407,7 @@ function runNtl(session, input, preset) {
     let stderr = "";
     let partial = "";
     const actions = [];
+    const keepLine = makeFenceFilter();
     let timedOut = false;
     let force;
     const timer = setTimeout(() => {
@@ -403,9 +424,10 @@ function runNtl(session, input, preset) {
       partial += d;
       let nl = partial.indexOf("\n");
       while (nl !== -1) {
-        reportProgress(session, partial.slice(0, nl), actions);
+        const line = partial.slice(0, nl);
         partial = partial.slice(nl + 1);
         nl = partial.indexOf("\n");
+        if (keepLine(line)) reportProgress(session, line, actions);
       }
     });
     child.on("error", (err) => {
@@ -419,14 +441,14 @@ function runNtl(session, input, preset) {
       clearTimeout(timer);
       clearTimeout(force);
       running.delete(session.id);
-      reportProgress(session, partial, actions);
+      if (keepLine(partial)) reportProgress(session, partial, actions);
       if (session.cancelled) return resolve({ cancelled: true });
       if (timedOut) {
         return reject(
-        new RpcError(
-          -32000,
-          `ntl timed out after ${TURN_TIMEOUT_MS / 1000}s; set NTL_ACP_TIMEOUT_MS for longer turns`,
-        ),
+          new RpcError(
+            -32000,
+            `ntl timed out after ${TURN_TIMEOUT_MS / 1000}s; set NTL_ACP_TIMEOUT_MS for longer turns`,
+          ),
         );
       }
       if (signal) {
@@ -441,13 +463,14 @@ function runNtl(session, input, preset) {
         return reject(
           new RpcError(
             -32000,
-            `ntl returned no JSON (exit ${code}): ${stderr.trim().slice(0, 500)}`,
+            `ntl returned no JSON (exit ${code}): ${stripToolFences(stderr.trim()).slice(0, 500)}`,
           ),
         );
       }
       if (parsed.is_error || code !== 0) {
+        const msg = stripToolFences(String(parsed.result ?? ""));
         return reject(
-          new RpcError(-32000, parsed.result || `ntl failed (exit ${code})`),
+          new RpcError(-32000, msg || `ntl failed (exit ${code})`),
         );
       }
       resolve({
@@ -619,7 +642,7 @@ async function handle(method, params) {
         agentInfo: {
           name: "ntl-acp",
           title: "NoTokenLimit (ntl)",
-          version: "1.3.2",
+          version: "1.3.3",
         },
         authMethods: [],
       };
