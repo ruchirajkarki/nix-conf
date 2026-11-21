@@ -53,7 +53,7 @@ const MODES = {
 // Directory ntl runs in. ntl limits file access to this folder, so "/" lets it
 // reach any directory. Set NTL_ACP_WORKDIR to narrow it.
 const WORKDIR = process.env.NTL_ACP_WORKDIR || "/";
-const TURN_TIMEOUT_MS = Number(process.env.NTL_ACP_TIMEOUT_MS) || 600_000;
+const TURN_TIMEOUT_MS = Number(process.env.NTL_ACP_TIMEOUT_MS) || 1_800_000;
 const CANCEL_GRACE_MS = 3000;
 // How long to wait for the user's answer to a permission question. No answer
 // is treated as "stay restricted"; it never silently escalates.
@@ -77,6 +77,12 @@ function defaultMode() {
 }
 const DEFAULT_MODE = defaultMode();
 const DEFAULT_MCP = process.env.NTL_ACP_ALLOW_MCP === "1";
+// Tool rounds ntl may use per turn. "default" leaves ntl's own cap (25).
+const MAX_TURNS_OPTIONS = [
+  { value: "default", name: "Default (25)" },
+  { value: "50", name: "50" },
+  { value: "100", name: "100" },
+];
 
 const sessions = new Map();
 const running = new Map();
@@ -150,6 +156,7 @@ function configOptions(s) {
       { value: "off", name: "Off" },
       { value: "on", name: "On" },
     ]),
+    selectOption("max_turns", "Max tool rounds", "other", s.maxTurns, MAX_TURNS_OPTIONS),
   ];
 }
 
@@ -161,6 +168,7 @@ function newSession(id, cwd) {
     mode: DEFAULT_MODE,
     plan: false,
     mcp: DEFAULT_MCP,
+    maxTurns: "default",
     history: [],
     busy: false,
     cancelled: false,
@@ -189,6 +197,7 @@ function persist(s) {
       mode: s.mode,
       plan: s.plan,
       mcp: s.mcp,
+      maxTurns: s.maxTurns,
       history: s.history,
     };
     writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2), {
@@ -361,6 +370,7 @@ function runNtl(session, input, preset) {
     if (preset.writes) args.push("--allow-writes");
     if (preset.shell) args.push("--allow-shell");
     if (session.mcp) args.push("--allow-mcp");
+    if (session.maxTurns !== "default") args.push("--max-turns", session.maxTurns);
 
     const child = spawn(NTL, args, {
       cwd: WORKDIR,
@@ -413,10 +423,10 @@ function runNtl(session, input, preset) {
       if (session.cancelled) return resolve({ cancelled: true });
       if (timedOut) {
         return reject(
-          new RpcError(
-            -32000,
-            `ntl timed out after ${TURN_TIMEOUT_MS / 1000}s`,
-          ),
+        new RpcError(
+          -32000,
+          `ntl timed out after ${TURN_TIMEOUT_MS / 1000}s; set NTL_ACP_TIMEOUT_MS for longer turns`,
+        ),
         );
       }
       if (signal) {
@@ -609,7 +619,7 @@ async function handle(method, params) {
         agentInfo: {
           name: "ntl-acp",
           title: "NoTokenLimit (ntl)",
-          version: "1.3.1",
+          version: "1.3.2",
         },
         authMethods: [],
       };
@@ -650,6 +660,9 @@ async function handle(method, params) {
       if (Object.hasOwn(MODES, saved.mode)) s.mode = saved.mode;
       if (typeof saved.plan === "boolean") s.plan = saved.plan;
       if (typeof saved.mcp === "boolean") s.mcp = saved.mcp;
+      if (typeof saved.maxTurns === "string" && MAX_TURNS_OPTIONS.some((o) => o.value === saved.maxTurns)) {
+        s.maxTurns = saved.maxTurns;
+      }
       if (Array.isArray(saved.history)) {
         s.history = saved.history
           .filter(
@@ -724,6 +737,12 @@ async function handle(method, params) {
             throw new RpcError(-32602, `Unknown MCP setting: ${value}`);
           }
           s.mcp = value === "on";
+          break;
+        case "max_turns":
+          if (!MAX_TURNS_OPTIONS.some((o) => o.value === value)) {
+            throw new RpcError(-32602, `Unknown max-turns setting: ${value}`);
+          }
+          s.maxTurns = value;
           break;
         default:
           throw new RpcError(
