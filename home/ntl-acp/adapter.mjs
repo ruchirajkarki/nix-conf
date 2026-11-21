@@ -55,6 +55,10 @@ const MODES = {
 const WORKDIR = process.env.NTL_ACP_WORKDIR || "/";
 const TURN_TIMEOUT_MS = Number(process.env.NTL_ACP_TIMEOUT_MS) || 600_000;
 const CANCEL_GRACE_MS = 3000;
+// How long to wait for the user's answer to a permission question. No answer
+// is treated as "stay restricted"; it never silently escalates.
+const PERMISSION_TIMEOUT_MS =
+  Number(process.env.NTL_ACP_PERMISSION_TIMEOUT_MS) || 180_000;
 const HISTORY_BUDGET_CHARS =
   Number(process.env.NTL_ACP_HISTORY_CHARS) || 40_000;
 const MAX_ACTIONS_PER_TURN = 30;
@@ -76,6 +80,12 @@ const DEFAULT_MCP = process.env.NTL_ACP_ALLOW_MCP === "1";
 
 const sessions = new Map();
 const running = new Map();
+// Requests the adapter sends to the client (e.g. session/request_permission).
+const clientCalls = new Map();
+let nextClientCallId = 10_000;
+// Capabilities the client advertised during initialize. Omitted means
+// unsupported, per the ACP spec.
+let clientCapabilities = {};
 
 class RpcError extends Error {
   constructor(code, message, data) {
@@ -99,6 +109,21 @@ function sendError(id, err) {
   const error = { code: err.code ?? -32603, message: err.message };
   if (err.data !== undefined) error.data = err.data;
   write({ jsonrpc: "2.0", id, error });
+}
+
+// Sends a request to the client and resolves with the raw response message,
+// or null when it is never answered. A client that does not implement the
+// method answers with a JSON-RPC error; callers treat that as "unsupported".
+function callClient(method, params, timeoutMs) {
+  return new Promise((resolve) => {
+    const id = nextClientCallId++;
+    const timer = setTimeout(() => {
+      clientCalls.delete(id);
+      resolve(null);
+    }, timeoutMs);
+    clientCalls.set(id, { timer, resolve });
+    write({ jsonrpc: "2.0", id, method, params });
+  });
 }
 
 function selectOption(id, name, category, currentValue, options) {
@@ -134,6 +159,7 @@ function newSession(id, cwd) {
     cwd,
     model: DEFAULT_MODEL,
     mode: DEFAULT_MODE,
+    plan: false,
     mcp: DEFAULT_MCP,
     history: [],
     busy: false,
@@ -161,6 +187,7 @@ function persist(s) {
       cwd: s.cwd,
       model: s.model,
       mode: s.mode,
+      plan: s.plan,
       mcp: s.mcp,
       history: s.history,
     };
@@ -269,9 +296,36 @@ function killTree(child, signal) {
   }
 }
 
-function runNtl(session, input) {
+// Tells ntl what it can actually do this turn. Without this, the model
+// sometimes believes it is a plain chat session and tells the user to run
+// commands themselves, even when it is allowed to.
+function capabilityNote(preset, session) {
+  const notes = [];
+  if (preset.writes)
+    notes.push(
+      "You have direct file write access in this environment: create and edit files yourself; never tell the user to make changes manually.",
+    );
+  if (preset.shell)
+    notes.push(
+      "You have live shell access: run commands yourself; they execute on this machine. Never tell the user to run commands in their own terminal.",
+    );
+  if (!preset.writes)
+    notes.push(
+      "This run is read-only for files: do not modify or create files; describe needed changes instead.",
+    );
+  if (!preset.shell)
+    notes.push(
+      "This run cannot execute shell commands: give the user the exact commands instead of trying to run them.",
+    );
+  if (session.plan)
+    notes.push(
+      "Plan mode: produce a clear, concrete plan of the changes you would make, with steps and risks. Do not implement anything.",
+    );
+  return notes.join(" ");
+}
+
+function runNtl(session, input, preset) {
   return new Promise((resolve, reject) => {
-    const preset = MODES[session.mode];
     const args = [
       "-p",
       "--output-format",
@@ -371,7 +425,8 @@ function runNtl(session, input) {
     });
 
     child.stdin.end(
-      `Project directory for this task: ${session.cwd}\n\n${input}`,
+      `Project directory for this task: ${session.cwd}\n` +
+        `Environment: ${capabilityNote(preset, session)}\n\n${input}`,
     );
   });
 }
@@ -387,9 +442,136 @@ function cancel(sessionId) {
   child.once("close", () => clearTimeout(force));
 }
 
+// Maps the mode ids a client may send onto ntl permission presets. Accepts
+// this adapter's own ids, common aliases, and T3 Code's runtime-mode names.
+function resolveModeId(modeId) {
+  switch (modeId) {
+    case "read-only":
+    case "readonly":
+      return "read-only";
+    case "edit":
+      return "edit";
+    case "edit-and-shell":
+    case "full-access":
+    case "auto":
+    case "auto-accept-edits":
+    case "default":
+      return "edit-and-shell";
+    case "approval-required":
+      return "edit";
+    case "plan":
+      return "read-only";
+    default:
+      return null;
+  }
+}
+
+function modeState(s) {
+  return {
+    currentModeId: s.mode,
+    availableModes: [
+      {
+        id: "read-only",
+        name: "Read only",
+        description: "ntl inspects and reports; no file changes, no shell",
+      },
+      {
+        id: "edit",
+        name: "Edit files",
+        description: "ntl edits files; no shell",
+      },
+      {
+        id: "edit-and-shell",
+        name: "Full access",
+        description: "ntl edits files and runs shell commands",
+      },
+    ],
+  };
+}
+
+// When the session preset denies file or shell access, ask the user through
+// the client's permission UI before the turn, the way other T3 Code agents do.
+// Resolves with "allow-once", "allow-always", "reject", "cancelled" (the
+// client's outcome), or "unsupported" (the client answered with an error or
+// never did; the turn then proceeds with the current preset).
+async function requestTurnPermission(s, preset) {
+  const gap = preset.writes ? "shell commands" : "file edits and shell commands";
+  const toolCallId = randomUUID();
+  const title = `ntl is running "${s.mode}"`;
+  const question =
+    `This ntl session is restricted to "${s.mode}". ` +
+    `Allow ntl to run ${gap} for this turn?`;
+  update(s.id, {
+    sessionUpdate: "tool_call",
+    toolCallId,
+    title,
+    kind: preset.writes ? "execute" : "edit",
+    status: "pending",
+    content: [
+      {
+        type: "content",
+        content: { type: "text", text: question },
+      },
+    ],
+  });
+  const resp = await callClient(
+    "session/request_permission",
+    {
+      sessionId: s.id,
+      toolCall: {
+        toolCallId,
+        title,
+        kind: preset.writes ? "execute" : "edit",
+        status: "pending",
+        content: [
+          { type: "content", content: { type: "text", text: question } },
+        ],
+      },
+      options: [
+        {
+          optionId: "allow-once",
+          name: preset.writes
+            ? "Allow shell for this turn"
+            : "Allow this turn with full access",
+          kind: "allow_once",
+        },
+        {
+          optionId: "allow-always",
+          name: "Switch session to full access",
+          kind: "allow_always",
+        },
+        { optionId: "reject", name: "Keep restricted", kind: "reject_once" },
+      ],
+    },
+    PERMISSION_TIMEOUT_MS,
+  );
+  let outcome;
+  if (resp?.result?.outcome?.outcome === "selected") {
+    const optionId = resp.result.outcome.optionId;
+    outcome = ["allow-once", "allow-always", "reject"].includes(optionId)
+      ? optionId
+      : "unsupported";
+  } else if (resp?.result?.outcome?.outcome === "cancelled") {
+    outcome = "cancelled";
+  } else {
+    outcome = "unsupported";
+  }
+  update(s.id, {
+    sessionUpdate: "tool_call_update",
+    toolCallId,
+    status: outcome === "cancelled" ? "in_progress" : outcome === "reject" || outcome === "unsupported" ? "failed" : "completed",
+  });
+  return outcome;
+}
+
 async function handle(method, params) {
   switch (method) {
-    case "initialize":
+    case "initialize": {
+      clientCapabilities = params?.clientCapabilities ?? {};
+      log(
+        `client: ${params?.clientInfo?.name ?? "unknown"} ${params?.clientInfo?.version ?? ""} ` +
+          `(fs=${clientCapabilities.fs?.readTextFile ? "r" : ""}${clientCapabilities.fs?.writeTextFile ? "w" : ""}, terminal=${clientCapabilities.terminal ? "yes" : "no"})`,
+      );
       return {
         protocolVersion: params?.protocolVersion ?? 1,
         agentCapabilities: {
@@ -400,9 +582,14 @@ async function handle(method, params) {
             embeddedContext: true,
           },
         },
-        agentInfo: { name: "ntl-acp", version: "1.2.0" },
+        agentInfo: {
+          name: "ntl-acp",
+          title: "NoTokenLimit (ntl)",
+          version: "1.3.0",
+        },
         authMethods: [],
       };
+    }
 
     case "authenticate":
       // Auth is the existing `ntl login`; nothing to do here.
@@ -415,13 +602,18 @@ async function handle(method, params) {
       const s = newSession(randomUUID(), params.cwd);
       sessions.set(s.id, s);
       persist(s);
-      return { sessionId: s.id, configOptions: configOptions(s) };
+      return {
+        sessionId: s.id,
+        configOptions: configOptions(s),
+        modes: modeState(s),
+      };
     }
 
     case "session/load": {
       const sessionId = params?.sessionId;
       if (sessions.has(sessionId)) {
-        return { configOptions: configOptions(sessions.get(sessionId)) };
+        const s = sessions.get(sessionId);
+        return { configOptions: configOptions(s), modes: modeState(s) };
       }
       const saved = readPersisted(sessionId);
       if (!saved) throw new RpcError(-32002, `Unknown session: ${sessionId}`);
@@ -432,6 +624,7 @@ async function handle(method, params) {
       const s = newSession(sessionId, cwd);
       if (MODELS.includes(saved.model)) s.model = saved.model;
       if (Object.hasOwn(MODES, saved.mode)) s.mode = saved.mode;
+      if (typeof saved.plan === "boolean") s.plan = saved.plan;
       if (typeof saved.mcp === "boolean") s.mcp = saved.mcp;
       if (Array.isArray(saved.history)) {
         s.history = saved.history.filter(
@@ -448,7 +641,26 @@ async function handle(method, params) {
           content: { type: "text", text: turn.text },
         });
       }
-      return { configOptions: configOptions(s) };
+      return { configOptions: configOptions(s), modes: modeState(s) };
+    }
+
+    case "session/set_mode": {
+      const s = getSession(params?.sessionId);
+      const mapped = resolveModeId(params?.modeId);
+      if (!mapped) {
+        log(`ignoring unknown modeId: ${params?.modeId}`);
+        return {};
+      }
+      if (mapped !== s.mode) {
+        s.mode = mapped;
+        s.plan = params?.modeId === "plan";
+        persist(s);
+        update(s.id, {
+          sessionUpdate: "current_mode_update",
+          currentModeId: s.mode,
+        });
+      }
+      return {};
     }
 
     case "session/set_config_option": {
@@ -461,12 +673,22 @@ async function handle(method, params) {
           }
           s.model = value;
           break;
-        case "mode":
-          if (!Object.hasOwn(MODES, value)) {
+        case "mode": {
+          let modeValue = value;
+          if (modeValue === "plan") modeValue = "read-only";
+          if (!Object.hasOwn(MODES, modeValue)) {
             throw new RpcError(-32602, `Unknown mode: ${value}`);
           }
-          s.mode = value;
+          if (s.mode !== modeValue || s.plan !== (value === "plan")) {
+            s.mode = modeValue;
+            s.plan = value === "plan";
+            update(s.id, {
+              sessionUpdate: "current_mode_update",
+              currentModeId: s.mode,
+            });
+          }
           break;
+        }
         case "mcp":
           if (value !== "on" && value !== "off") {
             throw new RpcError(-32602, `Unknown MCP setting: ${value}`);
@@ -494,7 +716,26 @@ async function handle(method, params) {
       s.busy = true;
       s.cancelled = false;
       try {
-        const result = await runNtl(s, buildInput(s, text));
+        const preset = MODES[s.mode];
+        let effective = preset;
+        if (!preset.writes || !preset.shell) {
+          const decision = await requestTurnPermission(s, preset);
+          if (decision === "cancelled") return { stopReason: "cancelled" };
+          if (decision === "allow-once" || decision === "allow-always")
+            effective = MODES["edit-and-shell"];
+          if (decision === "allow-always") {
+            s.mode = "edit-and-shell";
+            s.plan = false;
+            persist(s);
+            update(s.id, {
+              sessionUpdate: "current_mode_update",
+              currentModeId: s.mode,
+            });
+          } else {
+            log(`permission decision for turn: ${decision}`);
+          }
+        }
+        const result = await runNtl(s, buildInput(s, text), effective);
         if (result.cancelled) return { stopReason: "cancelled" };
 
         const stored = text.replace(T3_INSTRUCTIONS, "").trim() || "(empty message)";
@@ -583,8 +824,19 @@ function main() {
       return;
     }
 
-    // Responses to requests we never send, and invalid messages, are ignored.
-    if (typeof msg.method !== "string") return;
+    // Responses to our own client requests (e.g. session/request_permission)
+    // carry no method; anything else without one is invalid and ignored.
+    if (typeof msg.method !== "string") {
+      if (msg.id !== undefined) {
+        const pending = clientCalls.get(msg.id);
+        if (pending) {
+          clientCalls.delete(msg.id);
+          clearTimeout(pending.timer);
+          pending.resolve(msg);
+        }
+      }
+      return;
+    }
 
     if (msg.id === undefined) {
       if (msg.method === "session/cancel") cancel(msg.params?.sessionId);
