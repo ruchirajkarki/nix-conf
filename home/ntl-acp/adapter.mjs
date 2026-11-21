@@ -478,6 +478,21 @@ async function handle(method, params) {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: result.text },
         });
+        for (const file of result.files) {
+          const toolCallId = randomUUID();
+          update(s.id, {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: `Edited ${file}`,
+            kind: "edit",
+            status: "in_progress",
+          });
+          update(s.id, {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: "completed",
+          });
+        }
         if (result.files.length > 0) {
           update(s.id, {
             sessionUpdate: "agent_message_chunk",
