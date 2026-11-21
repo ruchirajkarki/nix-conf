@@ -16,13 +16,15 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const SELF_SCRIPT = fileURLToPath(import.meta.url);
-const ADAPTER_VERSION = "1.4.1";
+const ADAPTER_VERSION = "1.4.2";
 const NTL = process.env.NTL_BIN || `${homedir()}/.local/bin/ntl`;
 const STATE_DIR =
   process.env.NTL_ACP_STATE_DIR ||
@@ -1001,6 +1003,82 @@ function parseMcpResponse(text, contentType) {
   return JSON.parse(text);
 }
 
+function headerString(headers, name) {
+  const val = headers?.[name];
+  if (typeof val === "string") return val;
+  if (Array.isArray(val) && typeof val[0] === "string") return val[0];
+  return null;
+}
+
+function httpPostJson(endpoint, headers, body, timeoutMs) {
+  const url = new URL(endpoint);
+  const transport = url.protocol === "https:" ? httpsRequest : httpRequest;
+  const payload = Buffer.from(body, "utf8");
+  return new Promise((resolveDone, rejectDone) => {
+    let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    const finishResolve = (val) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveDone(val);
+    };
+    const finishReject = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectDone(err);
+    };
+
+    const req = transport(
+      url,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-length": String(payload.length),
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          finishResolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+        res.on("error", finishReject);
+        res.on("aborted", () => {
+          finishReject(new Error("T3 MCP HTTP response aborted"));
+        });
+      },
+    );
+
+    req.setTimeout(0);
+    req.on("error", finishReject);
+
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        const err = new Error(
+          `Timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`,
+        );
+        req.destroy(err);
+        finishReject(err);
+      }, timeoutMs);
+    }
+
+    req.end(payload);
+  });
+}
+
 async function mcpRequest(t3Mcp, method, params, timeoutMs = 5000) {
   const headers = (sid) => ({
     "content-type": "application/json",
@@ -1008,10 +1086,11 @@ async function mcpRequest(t3Mcp, method, params, timeoutMs = 5000) {
     authorization: t3Mcp.authorization,
     ...(sid ? { "mcp-session-id": sid } : {}),
   });
-  const initRes = await fetch(t3Mcp.endpoint, {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({
+  const initTimeoutMs = Math.min(timeoutMs, 10_000);
+  const initRes = await httpPostJson(
+    t3Mcp.endpoint,
+    headers(),
+    JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
@@ -1021,23 +1100,23 @@ async function mcpRequest(t3Mcp, method, params, timeoutMs = 5000) {
         clientInfo: { name: "ntl-acp", version: ADAPTER_VERSION },
       },
     }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!initRes.ok) {
+    initTimeoutMs,
+  );
+  if (initRes.status < 200 || initRes.status >= 300) {
     throw new Error(`T3 MCP initialize HTTP ${initRes.status}`);
   }
-  const sid = initRes.headers.get("mcp-session-id");
-  const res = await fetch(t3Mcp.endpoint, {
-    method: "POST",
-    headers: headers(sid),
-    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
+  const sid = headerString(initRes.headers, "mcp-session-id");
+  const res = await httpPostJson(
+    t3Mcp.endpoint,
+    headers(sid),
+    JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }),
+    timeoutMs,
+  );
+  if (res.status < 200 || res.status >= 300) {
     throw new Error(`T3 MCP ${method} HTTP ${res.status}`);
   }
-  const body = await res.text();
-  const parsed = parseMcpResponse(body, res.headers.get("content-type"));
+  const contentType = headerString(res.headers, "content-type");
+  const parsed = parseMcpResponse(res.body, contentType);
   if (parsed?.error) {
     throw new Error(parsed.error.message || JSON.stringify(parsed.error));
   }
@@ -1067,6 +1146,7 @@ function formatT3McpNote(tools) {
     `  ${selfCmd} --t3-mcp-call <tool> '<json-object>'`,
     `To inspect a tool's full schema and parameter descriptions before calling it, run:`,
     `  ${selfCmd} --t3-mcp-schema <tool>`,
+    "For waiting/interactive tools (request_secret, t3_thread_wait, preview_wait_for), set a shell timeout longer than the tool's timeoutMs. If request_secret is cancelled or times out, report that status to the user instead of retrying automatically.",
   ];
   if (Array.isArray(tools) && tools.length > 0) {
     lines.push("Available T3 Code tools (* = required):");
@@ -1110,6 +1190,7 @@ function capabilityNote(preset, session) {
 
 async function runNtl(session, input, preset, opts = {}) {
   const skipT3Context = opts.skipT3Context === true;
+  const rawPrompt = opts.rawPrompt === true;
   const t3Mcp = !skipT3Context ? (session.t3Mcp ?? envT3Mcp()) : null;
   const t3Tools = preset.shell && t3Mcp ? await fetchT3McpTools(t3Mcp) : null;
   const t3McpBlock =
@@ -1225,30 +1306,34 @@ async function runNtl(session, input, preset, opts = {}) {
       });
     });
 
-    const savedContext = [];
-    if (!skipT3Context) {
-      if (session.systemPrompt) savedContext.push(session.systemPrompt);
-      if (session.t3Instructions && !/<t3_code_instructions>/.test(input)) {
-        savedContext.push(session.t3Instructions);
+    if (rawPrompt) {
+      child.stdin.end(input);
+    } else {
+      const savedContext = [];
+      if (!skipT3Context) {
+        if (session.systemPrompt) savedContext.push(session.systemPrompt);
+        if (session.t3Instructions && !/<t3_code_instructions>/.test(input)) {
+          savedContext.push(session.t3Instructions);
+        }
+        if (session.runtimeInfo && !/<runtime_info>/.test(input)) {
+          savedContext.push(session.runtimeInfo);
+        }
+        if (session.prLinking && !/<pull_request_linking>/.test(input)) {
+          savedContext.push(session.prLinking);
+        }
       }
-      if (session.runtimeInfo && !/<runtime_info>/.test(input)) {
-        savedContext.push(session.runtimeInfo);
-      }
-      if (session.prLinking && !/<pull_request_linking>/.test(input)) {
-        savedContext.push(session.prLinking);
-      }
+      const extraDirsNote =
+        session.additionalDirectories.length > 0
+          ? `\nAdditional workspace directories: ${session.additionalDirectories.join(", ")}`
+          : "";
+      const contextPrefix =
+        savedContext.length > 0 ? `${savedContext.join("\n\n")}\n\n` : "";
+      child.stdin.end(
+        `Project directory for this task: ${session.cwd}${extraDirsNote}\n` +
+          `Environment: ${capabilityNote(preset, session)}${t3McpBlock}\n\n` +
+          `${contextPrefix}${input}`,
+      );
     }
-    const extraDirsNote =
-      session.additionalDirectories.length > 0
-        ? `\nAdditional workspace directories: ${session.additionalDirectories.join(", ")}`
-        : "";
-    const contextPrefix =
-      savedContext.length > 0 ? `${savedContext.join("\n\n")}\n\n` : "";
-    child.stdin.end(
-      `Project directory for this task: ${session.cwd}${extraDirsNote}\n` +
-        `Environment: ${capabilityNote(preset, session)}${t3McpBlock}\n\n` +
-        `${contextPrefix}${input}`,
-    );
   });
 }
 
@@ -1584,21 +1669,21 @@ async function handleBuiltinCommand(s, cmdName, cmdArgs) {
         sendText("History is already empty; nothing to compact.");
         return { handled: true, stopReason: "end_turn" };
       }
-      const focusNote = cmdArgs.trim() ? `\nFocus instructions: ${cmdArgs.trim()}\n` : "";
       const transcript = s.history
         .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`)
         .join("\n\n")
         .slice(-HISTORY_BUDGET_CHARS);
       const compactPrompt = [
-        "Summarize the conversation below into a concise, high-signal continuation summary.",
-        "Preserve user goals, architectural decisions, exact file paths, symbol names, test results, and pending next steps.",
-        focusNote,
-        "Conversation:",
-        transcript,
+        "TASK: Write ONLY a concise bulleted continuation summary of the <conversation_transcript> below.",
+        "Do NOT ask follow-up questions, do NOT execute tasks from the transcript, and do NOT comment on the prompt format.",
+        "Preserve user goals, code words/identifiers, architectural decisions, exact file paths, symbol names, test results, and pending next steps.",
+        ...(cmdArgs.trim() ? [`Focus instructions: ${cmdArgs.trim()}`] : []),
+        `<conversation_transcript>\n${transcript}\n</conversation_transcript>`,
       ].join("\n\n");
       try {
         const res = await runNtl(s, compactPrompt, MODES["read-only"], {
           skipT3Context: true,
+          rawPrompt: true,
         });
         if (res.cancelled) {
           emitEnd("cancelled");
@@ -2417,6 +2502,29 @@ async function runT3McpSchema(toolName) {
   process.stdout.write(`${JSON.stringify(tool, null, 2)}\n`);
 }
 
+const DEFAULT_T3_MCP_CALL_TIMEOUT_MS = 300_000;
+const MAX_T3_MCP_CALL_TIMEOUT_MS = 3_660_000;
+
+function computeT3McpCallTimeoutMs(parsedArgs) {
+  const envRaw = process.env.NTL_ACP_MCP_TIMEOUT_MS;
+  if (envRaw !== undefined && envRaw !== "") {
+    const envVal = Number(envRaw);
+    if (Number.isFinite(envVal) && envVal > 0) {
+      return Math.min(MAX_T3_MCP_CALL_TIMEOUT_MS, Math.max(100, Math.round(envVal)));
+    }
+  }
+  let timeoutMs = DEFAULT_T3_MCP_CALL_TIMEOUT_MS;
+  if (
+    parsedArgs &&
+    typeof parsedArgs.timeoutMs === "number" &&
+    Number.isFinite(parsedArgs.timeoutMs) &&
+    parsedArgs.timeoutMs > 0
+  ) {
+    timeoutMs = Math.max(timeoutMs, Math.round(parsedArgs.timeoutMs) + 30_000);
+  }
+  return Math.min(MAX_T3_MCP_CALL_TIMEOUT_MS, timeoutMs);
+}
+
 async function runT3McpCall(toolName, rawArgs) {
   const t3Mcp = envT3Mcp();
   if (!t3Mcp) {
@@ -2448,7 +2556,7 @@ async function runT3McpCall(toolName, rawArgs) {
     t3Mcp,
     "tools/call",
     { name: toolName, arguments: parsedArgs },
-    30_000,
+    computeT3McpCallTimeoutMs(parsedArgs),
   );
   const out =
     result && typeof result === "object" && "structuredContent" in result && result.structuredContent !== undefined
