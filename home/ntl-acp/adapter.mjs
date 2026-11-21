@@ -22,6 +22,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const SELF_SCRIPT = fileURLToPath(import.meta.url);
+const ADAPTER_VERSION = "1.4.1";
 const NTL = process.env.NTL_BIN || `${homedir()}/.local/bin/ntl`;
 const STATE_DIR =
   process.env.NTL_ACP_STATE_DIR ||
@@ -206,6 +207,10 @@ function modelState(s) {
   };
 }
 
+function effectiveModeId(s) {
+  return s.plan ? "plan" : s.mode;
+}
+
 function configOptions(s) {
   const modelChoices = getModels().map((m) => ({ value: m.id, name: m.name }));
   if (!modelChoices.some((m) => m.value === s.model)) {
@@ -217,8 +222,11 @@ function configOptions(s) {
       "mode",
       "Permissions",
       "mode",
-      s.mode,
-      Object.entries(MODES).map(([value, m]) => ({ value, name: m.label })),
+      effectiveModeId(s),
+      [
+        ...Object.entries(MODES).map(([value, m]) => ({ value, name: m.label })),
+        { value: "plan", name: "Plan" },
+      ],
     ),
     selectOption("web", "Web search", "other", s.web ? "on" : "off", [
       { value: "off", name: "Off" },
@@ -1010,7 +1018,7 @@ async function mcpRequest(t3Mcp, method, params, timeoutMs = 5000) {
       params: {
         protocolVersion: "2025-06-18",
         capabilities: {},
-        clientInfo: { name: "ntl-acp", version: "1.4.0" },
+        clientInfo: { name: "ntl-acp", version: ADAPTER_VERSION },
       },
     }),
     signal: AbortSignal.timeout(timeoutMs),
@@ -1281,7 +1289,7 @@ function resolveModeId(modeId) {
 
 function modeState(s) {
   return {
-    currentModeId: s.mode,
+    currentModeId: effectiveModeId(s),
     availableModes: [
       {
         id: "read-only",
@@ -1297,6 +1305,12 @@ function modeState(s) {
         id: "edit-and-shell",
         name: "Full access",
         description: "ntl edits files and runs shell commands",
+      },
+      {
+        id: "plan",
+        name: "Plan",
+        description:
+          "Plan mode: read-only analysis and planning without edits or shell",
       },
     ],
   };
@@ -1401,7 +1415,7 @@ async function handleBuiltinCommand(s, cmdName, cmdArgs) {
       ]);
       const chars = estimateContextChars(s);
       const summary = [
-        `**ntl-acp status** (v1.4.0)`,
+        `**ntl-acp status** (v${ADAPTER_VERSION})`,
         `- **Session:** \`${s.id}\``,
         `- **CWD:** \`${s.cwd}\``,
         `- **Model:** \`${s.model}\``,
@@ -1419,7 +1433,7 @@ async function handleBuiltinCommand(s, cmdName, cmdArgs) {
       s.mode = "read-only";
       s.plan = true;
       persist(s);
-      update(s.id, { sessionUpdate: "current_mode_update", currentModeId: s.mode });
+      update(s.id, { sessionUpdate: "current_mode_update", currentModeId: effectiveModeId(s) });
       update(s.id, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
       sendText("Switched to **plan** mode (`read-only`).");
       return { handled: true, stopReason: "end_turn" };
@@ -1514,7 +1528,7 @@ async function handleBuiltinCommand(s, cmdName, cmdArgs) {
       s.mode = mapped;
       s.plan = arg === "plan";
       persist(s);
-      update(s.id, { sessionUpdate: "current_mode_update", currentModeId: s.mode });
+      update(s.id, { sessionUpdate: "current_mode_update", currentModeId: effectiveModeId(s) });
       update(s.id, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
       sendText(`Switched permissions to \`${s.mode}\`${s.plan ? " (plan)" : ""}.`);
       return { handled: true, stopReason: "end_turn" };
@@ -1698,7 +1712,7 @@ async function probeStdioMcpServer(server) {
           params: {
             protocolVersion: "2024-11-05",
             capabilities: {},
-            clientInfo: { name: "ntl-acp", version: "1.4.0" },
+            clientInfo: { name: "ntl-acp", version: ADAPTER_VERSION },
           },
         })}\n`,
       );
@@ -1748,7 +1762,7 @@ async function handle(method, params) {
         agentInfo: {
           name: "ntl-acp",
           title: "NoTokenLimit (ntl)",
-          version: "1.4.0",
+          version: ADAPTER_VERSION,
         },
         authMethods: [],
       };
@@ -2025,7 +2039,7 @@ async function handle(method, params) {
         persist(s);
         update(s.id, {
           sessionUpdate: "current_mode_update",
-          currentModeId: s.mode,
+          currentModeId: effectiveModeId(s),
         });
         update(s.id, {
           sessionUpdate: "config_option_update",
@@ -2073,7 +2087,7 @@ async function handle(method, params) {
             s.plan = value === "plan";
             update(s.id, {
               sessionUpdate: "current_mode_update",
-              currentModeId: s.mode,
+              currentModeId: effectiveModeId(s),
             });
           }
           break;
@@ -2175,7 +2189,7 @@ async function handle(method, params) {
 
         const preset = MODES[s.mode];
         let effective = preset;
-        if (!preset.writes || !preset.shell) {
+        if (!s.plan && (!preset.writes || !preset.shell)) {
           const decision = await requestTurnPermission(s, preset);
           if (decision === "cancelled") return { stopReason: "cancelled" };
           if (decision === "allow-once" || decision === "allow-always")
@@ -2186,7 +2200,7 @@ async function handle(method, params) {
             persist(s);
             update(s.id, {
               sessionUpdate: "current_mode_update",
-              currentModeId: s.mode,
+              currentModeId: effectiveModeId(s),
             });
             update(s.id, {
               sessionUpdate: "config_option_update",
@@ -2446,7 +2460,9 @@ async function runT3McpCall(toolName, rawArgs) {
 
 const schemaIdx = process.argv.indexOf("--t3-mcp-schema");
 const callIdx = process.argv.indexOf("--t3-mcp-call");
-if (process.argv.includes("--check")) {
+if (process.argv.includes("--version") || process.argv.includes("-v")) {
+  process.stdout.write(`ntl-acp ${ADAPTER_VERSION}\n`);
+} else if (process.argv.includes("--check")) {
   runCheck();
 } else if (schemaIdx !== -1) {
   runT3McpSchema(process.argv[schemaIdx + 1]).catch((err) => {
