@@ -28,8 +28,11 @@
       flake = false;
     };
 
+    # Pinned to 60623ec: newer nix-homebrew revisions stopped exporting
+    # HOMEBREW_ORIGINAL_BREW_FILE, which brew 6.0.14 requires, so `brew bundle`
+    # fails during `make deploy`. Remove the pin once upstream fixes it.
     nix-homebrew = {
-      url = "github:zhaofengli/nix-homebrew";
+      url = "github:zhaofengli/nix-homebrew/60623ec512406261f553d24033c8a0c53fd0b7f2";
       inputs.brew-src.follows = "brew-src";
     };
   };

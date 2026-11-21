@@ -9,6 +9,7 @@
     ./fzf-bat.nix
     ./neovim.nix
     ./colima.nix
+    ./ntl-acp.nix
   ];
 
   home = {
