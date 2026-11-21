@@ -16,7 +16,9 @@ import {
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
+const SELF_SCRIPT = fileURLToPath(import.meta.url);
 const NTL = process.env.NTL_BIN || `${homedir()}/.local/bin/ntl`;
 const STATE_DIR =
   process.env.NTL_ACP_STATE_DIR ||
@@ -169,6 +171,8 @@ function newSession(id, cwd) {
     plan: false,
     mcp: DEFAULT_MCP,
     maxTurns: "default",
+    t3Instructions: "",
+    t3Mcp: null,
     history: [],
     busy: false,
     cancelled: false,
@@ -198,6 +202,7 @@ function persist(s) {
       plan: s.plan,
       mcp: s.mcp,
       maxTurns: s.maxTurns,
+      t3Instructions: s.t3Instructions,
       history: s.history,
     };
     writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2), {
@@ -349,6 +354,139 @@ function killTree(child, signal) {
   }
 }
 
+const t3McpToolCache = new Map();
+
+function shellQuote(arg) {
+  return `'${String(arg).replace(/'/g, `'\\''`)}'`;
+}
+
+function envT3Mcp() {
+  const endpoint = process.env.T3_ACP_MCP_ENDPOINT;
+  const authorization = process.env.T3_ACP_MCP_AUTHORIZATION;
+  if (!endpoint || !authorization) return null;
+  return { endpoint, authorization };
+}
+
+function extractT3Mcp(mcpServers) {
+  if (!Array.isArray(mcpServers)) return null;
+  const entry = mcpServers.find((s) => s?.name === "t3-code");
+  if (!entry) return null;
+  if (Array.isArray(entry.env)) {
+    const map = new Map(
+      entry.env
+        .filter((e) => typeof e?.name === "string" && typeof e?.value === "string")
+        .map((e) => [e.name, e.value]),
+    );
+    const endpoint = map.get("T3_ACP_MCP_ENDPOINT");
+    const authorization = map.get("T3_ACP_MCP_AUTHORIZATION");
+    if (endpoint && authorization) return { endpoint, authorization };
+  }
+  if (typeof entry.url === "string" && Array.isArray(entry.headers)) {
+    const auth = entry.headers.find(
+      (h) => typeof h?.name === "string" && h.name.toLowerCase() === "authorization",
+    )?.value;
+    if (auth) return { endpoint: entry.url, authorization: auth };
+  }
+  return null;
+}
+
+function parseMcpResponse(text, contentType) {
+  if (contentType?.includes("text/event-stream") || /^\s*event:|^\s*data:/m.test(text)) {
+    const dataLines = text
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith("data:"))
+      .map((l) => l.slice(5).trim())
+      .filter(Boolean);
+    for (let i = dataLines.length - 1; i >= 0; i--) {
+      try {
+        return JSON.parse(dataLines[i]);
+      } catch {
+        // try earlier event
+      }
+    }
+  }
+  return JSON.parse(text);
+}
+
+async function mcpRequest(t3Mcp, method, params, timeoutMs = 5000) {
+  const headers = (sid) => ({
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: t3Mcp.authorization,
+    ...(sid ? { "mcp-session-id": sid } : {}),
+  });
+  const initRes = await fetch(t3Mcp.endpoint, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "ntl-acp", version: "1.3.4" },
+      },
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!initRes.ok) {
+    throw new Error(`T3 MCP initialize HTTP ${initRes.status}`);
+  }
+  const sid = initRes.headers.get("mcp-session-id");
+  const res = await fetch(t3Mcp.endpoint, {
+    method: "POST",
+    headers: headers(sid),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    throw new Error(`T3 MCP ${method} HTTP ${res.status}`);
+  }
+  const body = await res.text();
+  const parsed = parseMcpResponse(body, res.headers.get("content-type"));
+  if (parsed?.error) {
+    throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+  }
+  return parsed?.result;
+}
+
+async function fetchT3McpTools(t3Mcp) {
+  if (!t3Mcp) return null;
+  const cached = t3McpToolCache.get(t3Mcp.endpoint);
+  if (cached) return cached;
+  try {
+    const result = await mcpRequest(t3Mcp, "tools/list", {}, 2500);
+    const tools = Array.isArray(result?.tools) ? result.tools : null;
+    if (tools && tools.length > 0) t3McpToolCache.set(t3Mcp.endpoint, tools);
+    return tools;
+  } catch (err) {
+    log(`could not list T3 MCP tools: ${err.message}`);
+    return null;
+  }
+}
+
+function formatT3McpNote(tools) {
+  const selfCmd = `${shellQuote(process.execPath)} ${shellQuote(SELF_SCRIPT)}`;
+  const lines = [
+    "T3 Code MCP tools ARE available to you via shell (even though they do not appear as native function tools).",
+    `Never claim you lack a T3 Code tool (such as reading or launching threads). Run:`,
+    `  ${selfCmd} --t3-mcp-call <tool> '<json-object>'`,
+    `To inspect a tool's full schema and parameter descriptions before calling it, run:`,
+    `  ${selfCmd} --t3-mcp-schema <tool>`,
+  ];
+  if (Array.isArray(tools) && tools.length > 0) {
+    lines.push("Available T3 Code tools (* = required):");
+    for (const t of tools) {
+      const props = Object.keys(t.inputSchema?.properties ?? {});
+      const req = Array.isArray(t.inputSchema?.required) ? t.inputSchema.required : [];
+      const sig = props.map((p) => (req.includes(p) ? `${p}*` : p)).join(", ");
+      lines.push(`- ${t.name}(${sig})`);
+    }
+  }
+  return lines.join("\n");
+}
+
 // Tells ntl what it can actually do this turn. Without this, the model
 // sometimes believes it is a plain chat session and tells the user to run
 // commands themselves, even when it is allowed to.
@@ -377,7 +515,12 @@ function capabilityNote(preset, session) {
   return notes.join(" ");
 }
 
-function runNtl(session, input, preset) {
+async function runNtl(session, input, preset) {
+  const t3Mcp = session.t3Mcp ?? envT3Mcp();
+  const t3Tools = preset.shell && t3Mcp ? await fetchT3McpTools(t3Mcp) : null;
+  const t3McpBlock =
+    preset.shell && t3Mcp ? `\n\n${formatT3McpNote(t3Tools)}` : "";
+
   return new Promise((resolve, reject) => {
     const args = [
       "-p",
@@ -392,11 +535,17 @@ function runNtl(session, input, preset) {
     if (session.mcp) args.push("--allow-mcp");
     if (session.maxTurns !== "default") args.push("--max-turns", session.maxTurns);
 
+    const childEnv = { ...process.env, NO_COLOR: "1" };
+    if (t3Mcp) {
+      childEnv.T3_ACP_MCP_ENDPOINT = t3Mcp.endpoint;
+      childEnv.T3_ACP_MCP_AUTHORIZATION = t3Mcp.authorization;
+    }
+
     const child = spawn(NTL, args, {
       cwd: WORKDIR,
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, NO_COLOR: "1" },
+      env: childEnv,
     });
     running.set(session.id, child);
     child.stdout.setEncoding("utf8");
@@ -481,9 +630,14 @@ function runNtl(session, input, preset) {
       });
     });
 
+    const savedInstructions =
+      session.t3Instructions && !/<t3_code_instructions>/.test(input)
+        ? `${session.t3Instructions}\n\n`
+        : "";
     child.stdin.end(
       `Project directory for this task: ${session.cwd}\n` +
-        `Environment: ${capabilityNote(preset, session)}\n\n${input}`,
+        `Environment: ${capabilityNote(preset, session)}${t3McpBlock}\n\n` +
+        `${savedInstructions}${input}`,
     );
   });
 }
@@ -642,7 +796,7 @@ async function handle(method, params) {
         agentInfo: {
           name: "ntl-acp",
           title: "NoTokenLimit (ntl)",
-          version: "1.3.3",
+          version: "1.3.4",
         },
         authMethods: [],
       };
@@ -657,6 +811,7 @@ async function handle(method, params) {
         throw new RpcError(-32602, "session/new requires an absolute cwd");
       }
       const s = newSession(randomUUID(), params.cwd);
+      s.t3Mcp = extractT3Mcp(params?.mcpServers);
       sessions.set(s.id, s);
       persist(s);
       return {
@@ -670,6 +825,7 @@ async function handle(method, params) {
       const sessionId = params?.sessionId;
       if (sessions.has(sessionId)) {
         const s = sessions.get(sessionId);
+        s.t3Mcp = extractT3Mcp(params?.mcpServers) ?? s.t3Mcp;
         return { configOptions: configOptions(s), modes: modeState(s) };
       }
       const saved = readPersisted(sessionId);
@@ -679,6 +835,10 @@ async function handle(method, params) {
           ? params.cwd
           : saved.cwd;
       const s = newSession(sessionId, cwd);
+      s.t3Mcp = extractT3Mcp(params?.mcpServers);
+      if (typeof saved.t3Instructions === "string") {
+        s.t3Instructions = saved.t3Instructions;
+      }
       if (MODELS.includes(saved.model)) s.model = saved.model;
       if (Object.hasOwn(MODES, saved.mode)) s.mode = saved.mode;
       if (typeof saved.plan === "boolean") s.plan = saved.plan;
@@ -784,6 +944,11 @@ async function handle(method, params) {
       }
       const text = promptText(params.prompt);
       if (text.trim() === "") throw new RpcError(-32602, "Prompt is empty");
+
+      const instrMatches = text.match(T3_INSTRUCTIONS);
+      if (instrMatches && instrMatches.length > 0) {
+        s.t3Instructions = instrMatches[instrMatches.length - 1];
+      }
 
       s.busy = true;
       s.cancelled = false;
@@ -935,8 +1100,87 @@ function main() {
   });
 }
 
+async function readAllStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function runT3McpSchema(toolName) {
+  const t3Mcp = envT3Mcp();
+  if (!t3Mcp) {
+    process.stderr.write("T3_ACP_MCP_ENDPOINT and T3_ACP_MCP_AUTHORIZATION must be set.\n");
+    process.exit(2);
+  }
+  const result = await mcpRequest(t3Mcp, "tools/list", {}, 5000);
+  const tools = result?.tools ?? [];
+  if (!toolName) {
+    process.stdout.write(`${JSON.stringify(tools.map((t) => t.name), null, 2)}\n`);
+    return;
+  }
+  const tool = tools.find((t) => t.name === toolName);
+  if (!tool) {
+    process.stderr.write(`Unknown T3 MCP tool: ${toolName}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(`${JSON.stringify(tool, null, 2)}\n`);
+}
+
+async function runT3McpCall(toolName, rawArgs) {
+  const t3Mcp = envT3Mcp();
+  if (!t3Mcp) {
+    process.stderr.write("T3_ACP_MCP_ENDPOINT and T3_ACP_MCP_AUTHORIZATION must be set.\n");
+    process.exit(2);
+  }
+  if (!toolName) {
+    process.stderr.write("Usage: ntl-acp --t3-mcp-call <tool> [json-object | -]\n");
+    process.exit(2);
+  }
+  let argText = rawArgs;
+  if (argText === "-") {
+    argText = await readAllStdin();
+  } else if (argText === undefined) {
+    argText = process.stdin.isTTY ? "{}" : (await readAllStdin()) || "{}";
+  }
+  let parsedArgs;
+  try {
+    parsedArgs = JSON.parse(argText);
+  } catch (err) {
+    process.stderr.write(`Invalid JSON arguments: ${err.message}\n`);
+    process.exit(2);
+  }
+  if (typeof parsedArgs !== "object" || parsedArgs === null || Array.isArray(parsedArgs)) {
+    process.stderr.write("Tool arguments must be a JSON object.\n");
+    process.exit(2);
+  }
+  const result = await mcpRequest(
+    t3Mcp,
+    "tools/call",
+    { name: toolName, arguments: parsedArgs },
+    30_000,
+  );
+  const out =
+    result && typeof result === "object" && "structuredContent" in result && result.structuredContent !== undefined
+      ? result.structuredContent
+      : result;
+  process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+  if (result?.isError) process.exit(1);
+}
+
+const schemaIdx = process.argv.indexOf("--t3-mcp-schema");
+const callIdx = process.argv.indexOf("--t3-mcp-call");
 if (process.argv.includes("--check")) {
   runCheck();
+} else if (schemaIdx !== -1) {
+  runT3McpSchema(process.argv[schemaIdx + 1]).catch((err) => {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  });
+} else if (callIdx !== -1) {
+  runT3McpCall(process.argv[callIdx + 1], process.argv[callIdx + 2]).catch((err) => {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  });
 } else {
   main();
 }
