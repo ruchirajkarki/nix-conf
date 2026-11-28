@@ -13,6 +13,7 @@
   localBin = "${homeDirectory}/.local/bin";
   ctoPackages = "${dataHome}/cto-packages";
   freebuffPrefix = "${dataHome}/freebuff";
+  bailianPrefix = "${dataHome}/bailian";
 in {
   home.packages = [
     nodejs # JavaScript runtime
@@ -33,6 +34,7 @@ in {
     "${dataHome}/cto/bin"
     "${dataHome}/browse/bin"
     "${freebuffPrefix}/bin"
+    "${bailianPrefix}/bin"
   ];
 
   # Ensure Corepack shims are installed once during activation so `pnpm`
@@ -61,6 +63,14 @@ in {
   home.activation."install-freebuff" = lib.hm.dag.entryAfter ["writeBoundary"] ''
     mkdir -p ${freebuffPrefix}
     PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${freebuffPrefix} freebuff@latest
+  '';
+
+  # Install the Alibaba Cloud Model Studio (Bailian) CLI, `bl`/`bailian` (npm-only,
+  # no nixpkgs package). Skills are installed project-scope in the second-brain
+  # vault (`bl skill add --scope project`, into `.agents/skills`), NOT user-level.
+  home.activation."install-bailian-cli" = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    mkdir -p ${bailianPrefix}
+    PATH="${nodejs}/bin:$PATH" ${nodejs}/bin/npm install -g --prefix ${bailianPrefix} bailian-cli@latest
   '';
 
   # Install Playwright MCP and register it with Claude Code (user scope) as a
